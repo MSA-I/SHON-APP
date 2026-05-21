@@ -57,7 +57,10 @@ export function Button({
         whileHover={disabled ? undefined : 'hover'}
         className={[
           'relative inline-flex items-center gap-2',
+          // Heebo body sans on the gold-dark text token
           'font-sans text-body text-gold-dark',
+          // Caps tracking from token (matches stitch label-sm-caps treatment)
+          'tracking-[0.12em]',
           'bg-transparent border-0 px-1 py-1',
           'cursor-pointer select-none',
           disabled ? 'opacity-50 cursor-not-allowed' : '',
@@ -65,7 +68,10 @@ export function Button({
       >
         {icon ? <span className="inline-flex items-center">{icon}</span> : null}
         <span>{children}</span>
-        {/* Underline: width 0 -> 100% over 150ms (SOP 09 §5 motion-quick). */}
+        {/* Underline: width 0 → 100% over 150ms (SOP 09 §5 motion-quick).
+            DESIGN.md calls for a "center-out" growth, so the transform
+            origin sits at 50% on the inline axis (RTL-safe, no logical
+            property needed because `center` is direction-agnostic). */}
         <motion.span
           aria-hidden="true"
           className="absolute inset-x-0 bottom-0 h-px bg-gold"
@@ -74,7 +80,7 @@ export function Button({
             hover: { scaleX: reduce ? 0 : 1 },
           }}
           transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-          style={{ transformOrigin: 'inset-inline-start' }}
+          style={{ transformOrigin: 'center' }}
         />
       </motion.button>
     );
@@ -92,7 +98,11 @@ export function Button({
       transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
       className={[
         'inline-flex items-center justify-center gap-2',
+        // Body sans on cream; uppercase + caps tracking matches the
+        // `label-sm-caps` treatment of the stitch primary CTA. The base
+        // text size is body so longer Hebrew CTAs don't wrap awkwardly.
         'font-sans text-body text-cream',
+        'tracking-[0.12em]',
         'bg-transparent border border-gold hover:border-gold-dark',
         'rounded-none', // 0px corners — SOP 09 §4 + SOP 16 § Shapes
         'px-6 py-3', // 24px / 12px per brief

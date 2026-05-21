@@ -59,6 +59,7 @@ import {
   EventProvider,
   useEvent,
 } from '../../../contexts/EventContext';
+import { ToastProvider } from '../../../contexts/ToastContext';
 import {
   __resetDbForTests,
   createClient,
@@ -154,9 +155,11 @@ function Boot({ clientId }: { clientId: string }) {
 async function renderWithEvent(clientId: string) {
   await act(async () => {
     root.render(
-      <EventProvider>
-        <Boot clientId={clientId} />
-      </EventProvider>,
+      <ToastProvider>
+        <EventProvider>
+          <Boot clientId={clientId} />
+        </EventProvider>
+      </ToastProvider>,
     );
   });
   // loadClient → db.getClient + db.listEventsByClient resolve over many
@@ -187,9 +190,11 @@ describe('EventTabs — empty state', () => {
   it('renders "טען אירוע" when no event is loaded', async () => {
     await act(async () => {
       root.render(
-        <EventProvider>
-          <EventTabs />
-        </EventProvider>,
+        <ToastProvider>
+          <EventProvider>
+            <EventTabs />
+          </EventProvider>
+        </ToastProvider>,
       );
     });
     expect(container.textContent).toContain('טען אירוע');

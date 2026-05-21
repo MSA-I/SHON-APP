@@ -36,8 +36,10 @@ import {
 import {
   type DocxBuildInput,
   type ImageSelection,
+  type Signature,
   LibError,
 } from '../types';
+import { rasterizeStrokes, decodePngDataUrl } from './signature';
 
 // ---------------------------------------------------------------------------
 // Luxury Editorial palette (SOP 03 § Color Palette)
@@ -280,9 +282,15 @@ export async function buildEventDocx(
     children.push(divider());
 
     // 10. Signature block (image + line + date stamp)
+    // Maintenance Log 2026-05-21: signature is dual-shape. PNG signatures are
+    // embedded as captured (cream-on-dark from the legacy capture, but Word
+    // ignores that — the bytes are just bytes). Vector signatures are
+    // rasterized to BLACK on WHITE per Behavioral Rule #13 ("DOCX output is
+    // ALWAYS light-theme") regardless of the active UI theme.
     children.push(sectionHeading('חתימה'));
     if (input.signature) {
-      children.push(buildSignatureImageParagraph(input.signature.dataUrl));
+      const sigBytes = await materializeSignaturePng(input.signature);
+      children.push(buildSignatureImageParagraph(sigBytes));
     }
     children.push(rtlPara({
       spacing: { before: 60, after: 120 },
@@ -607,9 +615,7 @@ function buildSelectionBlock(
   return block;
 }
 
-function buildSignatureImageParagraph(dataUrl: string): Paragraph {
-  // dataUrl is "data:image/png;base64,XXXX". Strip the prefix and decode.
-  const bytes = decodeDataUrlPng(dataUrl);
+function buildSignatureImageParagraph(bytes: Uint8Array): Paragraph {
   return new Paragraph({
     bidirectional: true,
     alignment: AlignmentType.RIGHT,
@@ -626,27 +632,22 @@ function buildSignatureImageParagraph(dataUrl: string): Paragraph {
   });
 }
 
-function decodeDataUrlPng(dataUrl: string): Uint8Array {
-  const comma = dataUrl.indexOf(',');
-  if (comma < 0) {
-    throw new LibError('Signature dataUrl missing payload separator', {
-      code: 'DOCX_IMAGE_EMBED',
-    });
+/**
+ * Materialize the active `Signature` to PNG bytes for DOCX embedding.
+ *
+ * Behavioral Rule #13 — DOCX output is ALWAYS light-theme:
+ *   • `kind: 'png'` → use the captured PNG bytes verbatim.
+ *   • `kind: 'vector'` → rasterize via `lib/signature.rasterizeStrokes` with
+ *     BLACK ink on a WHITE background regardless of `meta.theme`.
+ *
+ * The rasterizer is async because it uses the WebView2 `<canvas>` API.
+ */
+async function materializeSignaturePng(sig: Signature): Promise<Uint8Array> {
+  if (sig.kind === 'png') {
+    return decodePngDataUrl(sig.dataUrl);
   }
-  const header = dataUrl.slice(0, comma);
-  if (!/^data:image\/png(;[^,]*)?$/i.test(header)) {
-    throw new LibError('Signature dataUrl is not a PNG', {
-      code: 'DOCX_IMAGE_EMBED',
-    });
-  }
-  const b64 = dataUrl.slice(comma + 1);
-  // `atob` is available in Tauri's WebView2 context (DOM lib in tsconfig).
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) {
-    out[i] = bin.charCodeAt(i);
-  }
-  return out;
+  // sig.kind === 'vector'
+  return rasterizeStrokes(sig.strokes, sig.width, sig.height);
 }
 
 // ---------------------------------------------------------------------------

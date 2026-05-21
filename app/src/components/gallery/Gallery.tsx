@@ -37,14 +37,22 @@ import { Lightbox } from './Lightbox';
 // Public surface
 // ---------------------------------------------------------------------------
 
-export type GalleryMode = 'tableDesigns' | 'chuppah';
+export type GalleryMode =
+  | 'tableDesigns'
+  | 'chuppah'
+  // Maintenance Log 2026-05-21: every event tab now opens the gallery so the
+  // designer can pick reference images alongside the form fields. The new
+  // modes mirror `chuppah` (no hard cap) and only differ in their landing
+  // category — the user can switch freely afterwards.
+  | 'napkins'
+  | 'upgrades';
 
 export type GalleryProps = {
   /** Determines the selection cap and the default landing category. */
   mode: GalleryMode;
   /** Pre-selected items — survives gallery open/close cycles. */
   selections: ImageSelection[];
-  /** Optional override; defaults to 5 for tableDesigns, ∞ for chuppah. */
+  /** Optional override; defaults to 5 for tableDesigns, ∞ for everything else. */
   maxSelections?: number;
   /** Called on close — caller persists the (possibly mutated) selections. */
   onClose: (selections: ImageSelection[]) => void;
@@ -53,6 +61,8 @@ export type GalleryProps = {
 const DEFAULT_MAX: Record<GalleryMode, number> = {
   tableDesigns: 5,
   chuppah: Number.POSITIVE_INFINITY,
+  napkins: Number.POSITIVE_INFINITY,
+  upgrades: Number.POSITIVE_INFINITY,
 };
 
 /**
@@ -62,6 +72,8 @@ const DEFAULT_MAX: Record<GalleryMode, number> = {
 const DEFAULT_CATEGORY: Record<GalleryMode, ImageCategory> = {
   tableDesigns: 'אולם עיצוב בסיס 2026',
   chuppah: 'חופות ריזורט',
+  napkins: 'מפות מפיות',
+  upgrades: 'עיצובים שידרוג',
 };
 
 // ---------------------------------------------------------------------------

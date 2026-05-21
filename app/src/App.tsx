@@ -106,6 +106,9 @@ function AppShell() {
       <AppBar
         breadcrumb={breadcrumbFor(view)}
         showThemeToggle
+        onLogoClick={
+          view.kind === 'home' ? undefined : () => setView({ kind: 'home' })
+        }
       />
       <main className="pt-[60px]">
         {view.kind === 'home' ? (

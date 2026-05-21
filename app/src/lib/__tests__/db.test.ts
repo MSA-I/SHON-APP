@@ -69,7 +69,9 @@ function buildEventInput(
 const FAKE_PNG_DATA_URL = 'data:image/png;base64,aGVsbG8=';
 
 function makeSignature(): Signature {
-  return { dataUrl: FAKE_PNG_DATA_URL, signedAt: Date.now() };
+  // Maintenance Log 2026-05-21: Signature is dual-shape; fixtures use the
+  // 'png' kind to keep historical assertions stable.
+  return { kind: 'png', dataUrl: FAKE_PNG_DATA_URL, signedAt: Date.now() };
 }
 
 beforeEach(async () => {

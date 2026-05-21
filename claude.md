@@ -118,10 +118,16 @@ type Event = {
     items: string[];                       // רשימת bullet points
   };
 
-  signature: {
-    dataUrl: string;                       // base64 PNG
-    signedAt: number;                      // epoch ms
-  } | null;
+  // Dual-shape signature (Maintenance Log 2026-05-21). Legacy rows in
+  // IndexedDB lack a `kind` field — `lib/signature.normalizeSignature` adapts
+  // them to `kind: 'png'` on read. New captures always use `kind: 'vector'`
+  // so the ink follows `meta.theme`. DOCX export rasterizes vector to
+  // black-on-white per Behavioral Rule #13.
+  signature:
+    | { kind: 'png';    dataUrl: string;                              signedAt: number }
+    | { kind: 'vector'; strokes: SignatureStroke[]; width: number; height: number; signedAt: number }
+    | null;
+  // type SignatureStroke = { points: { x: number; y: number }[]; width: number };
 
   status: 'draft' | 'signed' | 'completed';
   createdAt: number;
@@ -332,4 +338,6 @@ This is the script every Phase-3 / Phase-5 acceptance test follows. If any step 
 | 2026-05-20 | Phase 3B kickoff. Three new SOPs landed: SOP 13 (App Shell & Routing — boot sequence, `AppView` state machine, EventContext scope, error boundaries, reduced-motion plumbing), SOP 14 (Theme Toggle — `meta.theme` storage, light-mode token inversion, curtain `<ThemeToggle />` API, read-before-paint boot order), SOP 15 (Component Architecture — `components/{ui,shell,client,event,gallery,signature,tagging}` + `contexts/` layout, Layer 2 imports rule forbidding `@tauri-apps/*`/`idb` outside `lib/`, canonical test-ID convention). Behavioral Rule #12 added (theme persistence). `MetaKey` extends to include `'theme'` (backend-coder follow-up in `db.ts`). | Phase 3A closed; Phase 3B (Components & Layout) is unblocked. Locks the foundation before frontend-designer / backend-coder ship 3B components. |
 | 2026-05-20 | Behavioral Rule #13 added: **DOCX/PDF output is always light-theme.** `meta.theme` only flips the React UI Shon sees during the meeting; generated DOCX deliverables ignore it entirely and always render with the white-page / dark-text light palette. Logo selection inside DOCX always uses `assets/logo.svg`. SOP 03 + SOP 14 cross-refs to follow. | User clarification: "ה-THEME ב-WORD וב-PDF תמיד יהיה בהיר רק באפליקציה ההחלפה ממצב כהה לבהיר ולהפך תהיה רלוונטית". Prevents future scope creep where someone tries to render a "dark-mode DOCX". |
 | 2026-05-21 | Phase 4 Refinement self-annealing pass: SOP notes synchronized with progress.md learnings; task_plan updated to reflect 3A+3B completion. | Phase 4 housekeeping — every one of the 16 SOPs now carries a `Self-Annealing Notes` section and every cross-cutting Phase 3A/3B lesson observable in `progress.md` (must-fix M-1..M-4 close, v1→v2 migration, Tailwind v4 light-mode trick, react-signature-canvas typing, EventContext INV-02 deviation, AppBar `useTheme` shim, `_stubs.tsx` cleanup, Toast primitive backlog, code-splitting backlog, legal-terms blocker, Phase 5 Tauri/cargo/CSP gates) is now captured at the SOP that owns it. |
+| 2026-05-21 | `Event.signature` schema flipped from `{ dataUrl, signedAt }` to a discriminated union `{ kind: 'png' \| 'vector' } \| null` (see Data Schemas above). Vector captures store `SignatureStroke[]` from `react-signature-canvas.toData()` so the ink can be re-painted with `currentColor` and follow theme flips at render time. PNG remains for legacy rows (read-only); no migration is performed (claude.md "don't touch old data"). DOCX export rasterizes vector to **black ink on white background** per Behavioral Rule #13 regardless of UI theme. SOP 06 + SOP 03 carry the implementation notes. Also fixed: `EventContext.signEvent` now creates the draft row before persisting the signature when `currentEvent.id === ''`, unblocking the "יישום וחתימה" / "ייצוא Word" buttons that previously did nothing on a freshly-created draft. SummaryTab surfaces both successes and failures via the global `<ToastProvider>`. | User report: "החתימה צריכה להיות נראית לעין כשהתפריט עובר ממצב כהה לבהיר ולהיפך"; "כפתור יישום וחתימה וייצוא ל WORD לא עובדים". Two distinct fixes — one rendering, one async-flow — landed together because they touch the same component graph. |
+| 2026-05-21 | Extended `Napkins` and `Upgrades` schemas with optional `designSelections?: ImageSelection[]`. `Gallery` accepts new modes `'napkins'` (default category `'מפות מפיות'`) and `'upgrades'` (default category `'עיצובים שידרוג'`). All four image-bearing event tabs (napkins / tableDesigns / chuppah / upgrades) now expose a "פתח גלריה" button + a `<TagsDisplay>` slot that reads `imageTags` (SOP 12) for the picked images and renders chips, falling back to "תגיות יתווספו לאחר תיוג התמונות" when empty. Summary tab shows the union across all four. db.ts `normalizeEvent` + `assertEventBodyValid` updated; v1 events with no `designSelections` field round-trip cleanly. | User directive 2026-05-21: "תוך כדי שהמעצב מראה ללקוח עיצובים הוא יכול לבחור תמונות ששייכות לאותו עיצוב…אמורים להיות שם כפתורי פתיחת גלריה ולא רק קטגוריות של צבעים מומצאים". Closes the gap where only TableDesignsTab + ChuppahTab opened the gallery. SOPs to follow in next housekeeping pass. |
 

@@ -879,6 +879,46 @@ export function toImageSrc(
   return fs.toFileSrc(abs);
 }
 
+/**
+ * Path-only variant of `toImageSrc` for `ImageSelection.imagePath` callers
+ * (the event tabs). The selected card needs an actual thumbnail; the
+ * selection schema only stores the relative path string, not a full
+ * `ImageMetadata`. Returns `null` if the project-root cache hasn't been
+ * primed yet (e.g. before the gallery has been opened in this session) so
+ * the caller can render an empty placeholder rather than a broken `<img>`.
+ *
+ * Same defenses as `toImageSrc`: rejects `..`/absolute/UNC, and verifies
+ * the resolved path stays inside the project root anchor.
+ */
+export function selectionPathToSrc(
+  imagePath: string,
+  fs: FsProvider = tauriFsProvider,
+): string | null {
+  if (typeof imagePath !== 'string' || imagePath.length === 0) return null;
+  if (cachedSyncRoot === null) return null;
+
+  const relPath = nfc(imagePath);
+  for (const seg of relPath.split('/')) {
+    if (seg === '..' || seg === '.') return null;
+  }
+  if (
+    relPath.startsWith('/') ||
+    relPath.startsWith('\\') ||
+    /^[a-zA-Z]:[\\/]/.test(relPath)
+  ) {
+    return null;
+  }
+
+  const abs = joinPosix(cachedSyncRoot, relPath);
+  const anchor = cachedSyncRoot.replace(/\/+$/, '');
+  if (abs !== anchor && !abs.startsWith(anchor + '/')) return null;
+  try {
+    return fs.toFileSrc(abs);
+  } catch {
+    return null;
+  }
+}
+
 // ===========================================================================
 // Test hooks
 // ===========================================================================

@@ -12,21 +12,58 @@
 /* ─── Theme: maps SOP 09 tokens into Tailwind v4 utilities ─────────────── */
 
 @theme {
-  /* Colors — usable as bg-ink, text-cream, border-gold, etc. */
-  --color-ink:           #0F0E0C;
-  --color-ink-raised:   #1A1714;
-  --color-cream:         #F5F0E8;
-  --color-cream-muted:   #A8A39B;
-  --color-gold:          #C9A961;
-  --color-gold-dark:     #A88B47;
-  --color-border-subtle: #2A2520;
+  /* ─── Colors ──────────────────────────────────────────────────────────
+   *
+   * Existing semantic names (ink, cream, gold, border-subtle) are LOCKED
+   * — every component shipped before 2026-05-21 references them via
+   * Tailwind utilities (bg-ink, text-cream, border-gold, ...). Renaming
+   * would break ~28 files. New tokens are ADDITIVE.
+   *
+   * New surface-elevation tier (Phase 4 consolidation pass) maps the
+   * stitch baseline's `surface-container-*` family into our system:
+   *   surface-lowest → sub-bar / breadcrumb strip
+   *   surface-low    → raised form container
+   *   surface        → card body (when explicitly raised)
+   *   surface-bright → hover state for raised surfaces
+   *
+   * Outline (stronger hairline) is the brighter variant of border-subtle
+   * — used where 1px on `--border-subtle` is too quiet (header bottom rule
+   * over the breadcrumb bar, sticky footer top rule, etc.).
+   */
+  --color-ink:             #0F0E0C;
+  --color-ink-raised:      #1A1714;
+  --color-cream:           #F5F0E8;
+  --color-cream-muted:     #A8A39B;
+  --color-gold:            #C9A961;
+  --color-gold-dark:       #A88B47;
+  --color-border-subtle:   #2A2520;
+  --color-outline:         #4A4640;
 
-  /* Type families — usable as font-serif, font-sans */
+  /* Surface elevation tiers (additive, 2026-05-21 consolidation) */
+  --color-surface-lowest:  #0F0E0E;
+  --color-surface-low:     #1C1B1B;
+  --color-surface:         #201F1F;
+  --color-surface-bright:  #2B2A29;
+
+  /* ─── Type families — usable as font-serif, font-sans, font-mono ──── */
   --font-serif: 'Frank Ruhl Libre', 'David Libre', 'Times New Roman', serif;
   --font-sans:  'Heebo', 'Assistant', 'Segoe UI', 'Arial', sans-serif;
   --font-mono:  'JetBrains Mono', 'Consolas', monospace;
 
-  /* Type scale — usable as text-hero, text-h1, ..., text-tiny */
+  /* ─── Type scale ──────────────────────────────────────────────────────
+   *
+   * Existing scale (hero / h1 / h2 / h3 / body / small / label / tiny)
+   * is LOCKED for the same reason as the colors. The `display` step is
+   * additive — matches the stitch comp's `display-lg: 48px / -0.01em
+   * letter-spacing` (used on the page-level hero "שון בלאיש — הפקות").
+   * Hero (4rem / 64px) is reserved for the splash screen; display
+   * (3rem / 48px) is the in-app page title.
+   */
+  --text-display: 3rem;
+  --text-display--line-height: 1.1;
+  --text-display--letter-spacing: -0.01em;
+  --text-display--font-weight: 500;
+
   --text-hero:   4rem;
   --text-hero--line-height: 1.15;
   --text-hero--font-weight: 500;
@@ -57,7 +94,12 @@
   --text-tiny:   0.6875rem;
   --text-tiny--line-height: 1.4;
 
-  /* Spacing scale — usable as p-1, p-2, p-3, p-4, p-6, p-8, p-12, p-16, p-24 */
+  /* ─── Letter-spacing tokens (additive) ─────────────────────────────── */
+  /* Usable as tracking-display (-0.01em) and tracking-caps (0.12em). */
+  --tracking-display: -0.01em;
+  --tracking-caps:    0.12em;
+
+  /* ─── Spacing scale — 4px baseline, every step a multiple of 0.25rem ── */
   --spacing-1:  0.25rem;
   --spacing-2:  0.5rem;
   --spacing-3:  0.75rem;
@@ -66,18 +108,30 @@
   --spacing-8:  2rem;
   --spacing-12: 3rem;
   --spacing-16: 4rem;
+  --spacing-20: 5rem;   /* additive — section-gap = 80px per stitch */
   --spacing-24: 6rem;
 
-  /* Border radius — sharp default, 2px hint for buttons/inputs only */
+  /* ─── Border radius — sharp default, 2px hint for buttons/inputs only ── */
   --radius-none: 0;
   --radius-sm:   2px;
 
-  /* Motion */
+  /* ─── Shadow — system rejects depth (SOP 09 §4) ────────────────────── */
+  --shadow-flat: none;
+
+  /* ─── Motion ──────────────────────────────────────────────────────── */
   --animate-duration-instant: 100ms;
   --animate-duration-quick:   150ms;
   --animate-duration-glow:    200ms;
   --animate-duration-modal:   260ms;
   --animate-duration-page:    320ms;
+
+  /* ─── Motion — additive (Phase WOW) ──────────────────────────────── */
+  --animate-duration-stagger-step: 80ms;
+  --animate-duration-entrance:     420ms;
+  --animate-duration-panel-swap:   240ms;
+  --animate-duration-confirm:      520ms;
+  --ease-signature:                cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-overshoot:                cubic-bezier(0.34, 1.32, 0.64, 1);
 }
 
 /* ─── Light-mode Tailwind colors ────────────────────────────────────────
@@ -103,13 +157,20 @@
  * NOTE: staged but not yet wired into App.tsx — pending SOP 13.
  */
 [data-theme="light"] {
-  --color-ink:           #F5F0E8;   /* canvas in light is cream */
-  --color-ink-raised:    #FFFFFF;   /* raised surface = pure white */
-  --color-cream:         #1A1714;   /* "cream" utility now paints dark text */
-  --color-cream-muted:   #6B6258;   /* muted text — warm dark gray */
-  --color-gold:          #A88B47;   /* gold-dark reads better on cream */
-  --color-gold-dark:     #8C7032;   /* slightly darker gold for eyebrows/hover */
-  --color-border-subtle: #E5DFD3;   /* faint hairline */
+  --color-ink:             #F5F0E8;   /* canvas in light is cream */
+  --color-ink-raised:      #FFFFFF;   /* raised surface = pure white */
+  --color-cream:           #1A1714;   /* "cream" utility now paints dark text */
+  --color-cream-muted:     #6B6258;   /* muted text — warm dark gray */
+  --color-gold:            #A88B47;   /* gold-dark reads better on cream */
+  --color-gold-dark:       #8C7032;   /* slightly darker gold for eyebrows/hover */
+  --color-border-subtle:   #E5DFD3;   /* faint hairline */
+  --color-outline:         #C9C0AE;   /* stronger separator on cream */
+
+  /* Surface elevation tiers — re-bound for cream canvas */
+  --color-surface-lowest:  #EFE9DD;   /* slightly warmer than canvas */
+  --color-surface-low:     #FFFFFF;   /* pure white form container */
+  --color-surface:         #FFFFFF;   /* pure white card body */
+  --color-surface-bright:  #F5F0E8;   /* hover state — back to cream */
 }
 
 /* ─── Base reset & RTL flow ────────────────────────────────────────────── */
@@ -190,10 +251,42 @@
     padding: var(--spacing-3) var(--spacing-4);
     border-radius: var(--radius-sm);
     transition: border-color var(--motion-quick) var(--ease);
+    /* Inherit color-scheme from <html> so native widgets (date picker
+       calendar icon, select dropdown chrome, time picker) render in the
+       active theme. Without this, WebView2 falls back to the OS default
+       light styling — visible as an inverted calendar glyph in dark mode
+       and a white-background <select> popup. */
+    color-scheme: inherit;
   }
   input:focus, textarea:focus, select:focus {
     outline: none;
     border-color: var(--accent);
+  }
+
+  /* Native <input type="date"> calendar picker icon — invert in dark
+     mode so the glyph reads as a cream icon on dark, not the default
+     dark glyph that becomes invisible/inverted. */
+  html:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator,
+  html:not([data-theme="light"]) input[type="time"]::-webkit-calendar-picker-indicator {
+    filter: invert(1) opacity(0.7);
+    cursor: pointer;
+  }
+  html:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator:hover,
+  html:not([data-theme="light"]) input[type="time"]::-webkit-calendar-picker-indicator:hover {
+    filter: invert(1) opacity(1);
+  }
+
+  /* Native <select> closed appearance — explicit dark surface so the
+     control matches the form chrome instead of falling back to the
+     default OS field. The opened dropdown popup is controlled by
+     color-scheme: inherit above. */
+  html:not([data-theme="light"]) select {
+    background-color: var(--color-ink-raised, #1A1714);
+    color: var(--color-cream, #F5F0E8);
+  }
+  html:not([data-theme="light"]) select option {
+    background-color: var(--color-ink-raised, #1A1714);
+    color: var(--color-cream, #F5F0E8);
   }
 
   /* Focus-visible ring on every interactive element (SOP 09 §12).
@@ -249,4 +342,23 @@
 
   /* Mirror Lucide directional icons in RTL (SOP 09 §7). */
   .icon-rtl-mirror { transform: scaleX(-1); }
+}
+
+/* ─── Phase WOW — progress shimmer ──────────────────────────────────────
+ *
+ * Used by the SOP 12 TaggingPass progress bar. Constitution-clean: NO
+ * gradient (SOP 09 §4 forbids gradients as decorative backgrounds).
+ * The "shimmer" is implemented as an opacity pulse on a flat gold fill.
+ * Reduced-motion → animation disabled, fill stays solid.
+ */
+@keyframes progress-shimmer {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.progress-shimmer-fill {
+  background-color: var(--gold);
+  animation: progress-shimmer 1.6s var(--ease) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-shimmer-fill { animation: none; }
 }

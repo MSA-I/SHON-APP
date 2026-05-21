@@ -12,3 +12,5 @@ export { Toast } from './Toast';
 export type { ToastProps, ToastKind } from './Toast';
 export { ThemeToggle } from './curtain-theme-toggle';
 export type { ThemeToggleProps, AppBarProps as ThemeToggleAppBarProps, Theme as ThemeToggleTheme } from './curtain-theme-toggle';
+export { AnimatedThemeToggler } from './animated-theme-toggler';
+export type { AnimatedThemeTogglerProps } from './animated-theme-toggler';

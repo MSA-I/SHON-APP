@@ -51,7 +51,7 @@ export type EventAction =
   | { type: 'remove-table-selection'; imagePath: string }
   | { type: 'add-chuppah-selection'; selection: ImageSelection }
   | { type: 'remove-chuppah-selection'; imagePath: string }
-  | { type: 'sign'; dataUrl: string }
+  | { type: 'sign'; signature: Signature }
   | { type: 'set-loading'; loading: boolean }
   | { type: 'set-error'; error: string | null }
   | { type: 'reset' };
@@ -61,7 +61,16 @@ export type EventContextValue = EventState & {
   // Async helpers that wrap dispatch + db calls.
   loadClient: (clientId: string) => Promise<void>;
   saveEvent: () => Promise<void>;
-  signEvent: (dataUrl: string) => Promise<void>;
+  /**
+   * Persist a signature and flip status to 'signed'. Accepts the dual-shape
+   * `Signature` so vector strokes are stored verbatim (theme-reactive on
+   * read; rasterized to black-on-white in the DOCX export per Behavioral
+   * Rule #13). If the current event was never persisted (`id === ''`), this
+   * helper transparently saves the draft first so the signature has a row
+   * to update — fixing the previously-silent "button does nothing" failure
+   * on a fresh draft (Maintenance Log 2026-05-21).
+   */
+  signEvent: (signature: Signature) => Promise<void>;
   /** INV-01: enforces max 5 selections. */
   toggleTableSelection: (selection: ImageSelection) => void;
   toggleChuppahSelection: (selection: ImageSelection) => void;
@@ -300,15 +309,14 @@ export function eventReducer(state: EventState, action: EventAction): EventState
       if (!state.currentEvent) {
         return { ...state, error: ERR_SIGN_NO_EVENT };
       }
-      const sig: Signature = {
-        dataUrl: action.dataUrl,
-        signedAt: Date.now(),
-      };
+      // Maintenance Log 2026-05-21: dual-shape signature; the action carries
+      // the full `Signature` (caller decides PNG vs vector). signedAt is
+      // owned by the caller (SignaturePad stamps it at confirm time).
       return {
         ...state,
         currentEvent: {
           ...state.currentEvent,
-          signature: sig,
+          signature: action.signature,
           status: 'signed',
           updatedAt: Date.now(),
         },
@@ -419,21 +427,54 @@ export function EventProvider({ children }: EventProviderProps) {
   }, [state.currentEvent, state.currentClient]);
 
   const signEvent = useCallback(
-    async (dataUrl: string): Promise<void> => {
-      if (!state.currentEvent || !state.currentEvent.id) {
+    async (signature: Signature): Promise<void> => {
+      if (!state.currentEvent || !state.currentClient) {
         dispatch({ type: 'set-error', error: ERR_SIGN_NO_EVENT });
         return;
       }
       dispatch({ type: 'set-loading', loading: true });
       try {
-        const sig: Signature = { dataUrl, signedAt: Date.now() };
-        const saved = await db.updateEvent(state.currentEvent.id, {
-          signature: sig,
+        // Maintenance Log 2026-05-21: previously this helper silently
+        // returned when `currentEvent.id === ''` (a fresh draft created in
+        // memory but never persisted via `saveEvent`). The user-visible
+        // symptom was "the יישום וחתימה button does nothing". Fix: persist
+        // the draft first, then atomically attach the signature in a second
+        // tx. Both writes go through `db.createEvent` / `db.updateEvent` so
+        // every domain invariant (INV-02 / INV-09 / INV-10) is enforced.
+        let eventId = state.currentEvent.id;
+        if (!eventId || eventId.length === 0) {
+          // Strip lib-owned fields per `db.createEvent` contract.
+          const {
+            id: _id,
+            createdAt: _createdAt,
+            updatedAt: _updatedAt,
+            // INV-02: createEvent rejects status='signed' without a
+            // signature. Force draft for the create; the signed transition
+            // happens in the updateEvent that follows.
+            status: _status,
+            signature: _sig,
+            ...input
+          } = state.currentEvent;
+          void _id;
+          void _createdAt;
+          void _updatedAt;
+          void _status;
+          void _sig;
+          const created = await db.createEvent({
+            ...input,
+            status: 'draft',
+            signature: null,
+          });
+          eventId = created.id;
+        }
+
+        const saved = await db.updateEvent(eventId, {
+          signature,
           status: 'signed',
         });
         dispatch({
           type: 'load-client',
-          client: state.currentClient!,
+          client: state.currentClient,
           event: saved,
         });
         // SOP 07 trigger #1: auto-snapshot on every signature event.
@@ -447,6 +488,7 @@ export function EventProvider({ children }: EventProviderProps) {
       } catch (cause) {
         console.error('[EventContext] signEvent failed', cause);
         dispatch({ type: 'set-error', error: 'חתימה נכשלה' });
+        throw cause;
       } finally {
         dispatch({ type: 'set-loading', loading: false });
       }

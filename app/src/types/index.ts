@@ -132,6 +132,16 @@ export type Napkins = {
   fabric: NapkinFabric;
   /** Free-text */
   foldType: string;
+  /**
+   * Optional gallery selections for napkin/linen inspirations.
+   * Added 2026-05-21 (Maintenance Log) to give every event tab a gallery
+   * picker per the user's directive that the designer must browse images
+   * and not just pick from canned color names. Optional for backward
+   * compatibility with v1.0 events created before this field existed —
+   * an absent field is treated as an empty array by the UI and by db.ts
+   * normalization. There is no schema cap; the UI surfaces ∞.
+   */
+  designSelections?: ImageSelection[];
 };
 
 export type Reception = {
@@ -166,14 +176,65 @@ export type Upgrades = {
   description: string;
   /** Bullet points */
   items: string[];
+  /**
+   * Optional gallery selections for upgrade inspirations.
+   * Added 2026-05-21 (Maintenance Log). Same backward-compatibility and
+   * sizing rules as `Napkins.designSelections`.
+   */
+  designSelections?: ImageSelection[];
 };
 
-export type Signature = {
-  /** base64 PNG (`data:image/png;base64,…`) from `react-signature-canvas` */
-  dataUrl: string;
-  /** Epoch ms */
-  signedAt: number;
+/**
+ * A single ink stroke captured from `react-signature-canvas`. `points` is a
+ * dense polyline in canvas-pixel space; `width` is the requested stroke width
+ * (the SVG renderer drives the visible thickness from this value, but the
+ * actual pen-pressure-derived widths are not preserved — re-tinting was the
+ * only reason vector strokes were introduced, not pressure fidelity).
+ *
+ * Ratified 2026-05-21 (Maintenance Log) so signatures can re-color with the
+ * active UI theme. Theme-reactive ink is a Behavioral Rule #12 corollary: the
+ * couple's signature must remain visible when Shon flips dark↔light during a
+ * meeting.
+ */
+export type SignatureStroke = {
+  points: { x: number; y: number }[];
+  width: number;
 };
+
+/**
+ * Captured signature. Two storage shapes coexist (Maintenance Log 2026-05-21):
+ *
+ *   • `kind: 'png'` — legacy / read-only. The original `react-signature-canvas`
+ *     toDataURL() output baked at capture time on a dark canvas with cream ink.
+ *     Existing data in IndexedDB has NO `kind` field; readers MUST normalize
+ *     `{ dataUrl, signedAt }` → `{ kind: 'png', dataUrl, signedAt }` on the
+ *     way OUT (see `lib/db.ts.normalizeSignature`). No migration write is
+ *     performed; old data stays old (Behavioral Rule "don't touch old data").
+ *
+ *   • `kind: 'vector'` — preferred for all NEW signatures. Strokes are stored
+ *     verbatim from `react-signature-canvas.toData()`; render-time logic
+ *     re-paints them with `currentColor` so the ink follows the theme. DOCX
+ *     export rasterizes them to black-on-white per Behavioral Rule #13.
+ */
+export type Signature =
+  | {
+      kind: 'png';
+      /** base64 PNG (`data:image/png;base64,…`) from `react-signature-canvas` */
+      dataUrl: string;
+      /** Epoch ms */
+      signedAt: number;
+    }
+  | {
+      kind: 'vector';
+      /** Strokes in canvas-pixel space. Replays via SVG <polyline>/<path>. */
+      strokes: SignatureStroke[];
+      /** Capture-time canvas width (for re-render aspect ratio). */
+      width: number;
+      /** Capture-time canvas height. */
+      height: number;
+      /** Epoch ms */
+      signedAt: number;
+    };
 
 export type EventStatus = 'draft' | 'signed' | 'completed';
 

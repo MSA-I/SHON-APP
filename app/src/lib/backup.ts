@@ -452,7 +452,10 @@ function validateEvent(e: unknown, idx: number): void {
     validateSelection(cds[i], `events[${idx}].chuppah.designSelections[${i}]`);
   }
 
-  // P-05 §2: signature dataUrl size cap (≤ 200 KB).
+  // P-05 §2: signature size cap (≤ 200 KB).
+  // Maintenance Log 2026-05-21: dual-shape — `kind: 'png'` keeps the prior
+  // dataUrl shape; `kind: 'vector'` carries a strokes array. Legacy backups
+  // (no `kind` field) are accepted as PNG.
   const sig = (e as { signature?: unknown }).signature;
   if (sig !== null && sig !== undefined) {
     if (!isPlainObject(sig)) {
@@ -460,25 +463,44 @@ function validateEvent(e: unknown, idx: number): void {
         code: 'BACKUP_PARSE',
       });
     }
-    const dataUrl = (sig as { dataUrl?: unknown }).dataUrl;
-    if (typeof dataUrl !== 'string') {
-      throw new LibError(
-        `events[${idx}].signature.dataUrl must be a string`,
-        { code: 'BACKUP_PARSE' },
-      );
-    }
-    if (dataUrl.length > MAX_SIGNATURE_CHARS) {
-      throw new LibError(
-        `events[${idx}].signature.dataUrl exceeds ${MAX_SIGNATURE_CHARS} chars (P-05)`,
-        { code: 'BACKUP_PARSE', id: e.id as string },
-      );
-    }
-    const signedAt = (sig as { signedAt?: unknown }).signedAt;
+    const sigObj = sig as Record<string, unknown>;
+    const kind = sigObj.kind;
+    const signedAt = sigObj.signedAt;
     if (typeof signedAt !== 'number' || !Number.isFinite(signedAt)) {
       throw new LibError(
         `events[${idx}].signature.signedAt must be a finite number`,
         { code: 'BACKUP_PARSE' },
       );
+    }
+    if (kind === 'vector') {
+      if (!Array.isArray(sigObj.strokes)) {
+        throw new LibError(
+          `events[${idx}].signature.strokes must be an array`,
+          { code: 'BACKUP_PARSE' },
+        );
+      }
+      const measured = JSON.stringify(sigObj.strokes).length;
+      if (measured > MAX_SIGNATURE_CHARS) {
+        throw new LibError(
+          `events[${idx}].signature.strokes exceeds ${MAX_SIGNATURE_CHARS} chars (P-05)`,
+          { code: 'BACKUP_PARSE', id: e.id as string },
+        );
+      }
+    } else {
+      // PNG (with explicit `kind: 'png'`) or legacy (no `kind` field).
+      const dataUrl = sigObj.dataUrl;
+      if (typeof dataUrl !== 'string') {
+        throw new LibError(
+          `events[${idx}].signature.dataUrl must be a string`,
+          { code: 'BACKUP_PARSE' },
+        );
+      }
+      if (dataUrl.length > MAX_SIGNATURE_CHARS) {
+        throw new LibError(
+          `events[${idx}].signature.dataUrl exceeds ${MAX_SIGNATURE_CHARS} chars (P-05)`,
+          { code: 'BACKUP_PARSE', id: e.id as string },
+        );
+      }
     }
   }
 
@@ -531,9 +553,21 @@ export async function exportBackup(
   assertJsonSafe(envelope, 'envelope');
 
   // 3b. P-05 #2: per-signature size assert.
+  // Maintenance Log 2026-05-21: signature is dual-shape (png|vector). For PNG
+  // we measure the dataUrl; for vector we serialize the strokes payload and
+  // measure that instead. Either way, the cap is per-signature.
   for (let i = 0; i < envelope.events.length; i++) {
     const sig = envelope.events[i]?.signature;
-    if (sig && typeof sig.dataUrl === 'string' && sig.dataUrl.length > MAX_SIGNATURE_CHARS) {
+    if (!sig) continue;
+    let measuredLen = 0;
+    if (sig.kind === 'png') {
+      measuredLen = sig.dataUrl.length;
+    } else if (sig.kind === 'vector') {
+      // Estimate the on-wire footprint via JSON.stringify — the same value
+      // that lands in the envelope.
+      measuredLen = JSON.stringify(sig.strokes).length;
+    }
+    if (measuredLen > MAX_SIGNATURE_CHARS) {
       throw new LibError(
         `Signature on events[${i}] exceeds ${MAX_SIGNATURE_CHARS} chars (P-05)`,
         { code: 'BACKUP_WRITE', id: envelope.events[i]?.id },

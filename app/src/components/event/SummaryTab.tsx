@@ -14,15 +14,18 @@ import { FileDown } from 'lucide-react';
 
 import { Button } from '../ui/Button';
 import { useEvent } from '../../contexts/EventContext';
+import { useToast } from '../../contexts/ToastContext';
 import { buildEventDocx } from '../../lib/docx';
 import { exportBackup } from '../../lib/backup';
 import { getProjectRoot } from '../../lib/config';
-import { getEventDocxPath } from '../../lib/paths';
+import { getEventDir, getEventDocxPath } from '../../lib/paths';
 import { tauriFsExtras, tauriFsProvider } from '../../lib/tauri-fs';
 import type { DocxBuildInput, ImageSelection, Signature } from '../../types';
 
 import { ChipLabel, SectionHeader } from './EventDetailsTab';
 import { SignaturePad } from '../signature/SignaturePad';
+import { TagsDisplay } from './TagsDisplay';
+import { SelectionThumbnail } from './SelectionThumbnail';
 
 type ExportState =
   | { kind: 'idle' }
@@ -32,6 +35,7 @@ type ExportState =
 
 export function SummaryTab(): ReactNode {
   const ctx = useEvent();
+  const { toast } = useToast();
   const ev = ctx.currentEvent;
   const client = ctx.currentClient;
   const [state, setState] = useState<ExportState>({ kind: 'idle' });
@@ -45,15 +49,16 @@ export function SummaryTab(): ReactNode {
     if (!ev) return;
     try {
       // EventContext owns the signature pipeline:
-      //   • dispatch('sign') sets in-memory signature + status='signed'
-      //   • signEvent(dataUrl) persists via db.updateEvent and fires the SOP 07
-      //     auto-snapshot in the background.
-      await ctx.signEvent(sig.dataUrl);
+      //   • signEvent(signature) persists via db.updateEvent (creating the
+      //     event row first if the draft has no id yet — Maintenance Log
+      //     2026-05-21 fix for the silent-button bug), flips status to
+      //     'signed', and fires the SOP 07 auto-snapshot.
+      await ctx.signEvent(sig);
+      toast({ kind: 'success', message: 'החתימה נשמרה' });
     } catch (err) {
-      setState({
-        kind: 'error',
-        message: errMessage(err, 'שגיאה בשמירת חתימה'),
-      });
+      const message = errMessage(err, 'שגיאה בשמירת חתימה');
+      setState({ kind: 'error', message });
+      toast({ kind: 'error', message });
     }
   }
 
@@ -119,6 +124,13 @@ export function SummaryTab(): ReactNode {
       };
 
       const bytes = await buildEventDocx(input);
+      // Maintenance Log 2026-05-21: ensure the events/<id>/ directory exists
+      // before atomicWriteFile. The Tauri FS plugin does NOT auto-create
+      // parent directories — without this mkdir, the .tmp write fails on
+      // first-time export with "atomicWriteFile failed". `tauriFsProvider.
+      // ensureDir` runs `mkdir -p` (recursive: true) inside the project root.
+      const eventDir = await getEventDir(ev.id);
+      await tauriFsProvider.ensureDir(eventDir);
       const target = await getEventDocxPath(ev.id);
       await tauriFsExtras.atomicWriteFile(target, bytes);
 
@@ -130,11 +142,11 @@ export function SummaryTab(): ReactNode {
       });
 
       setState({ kind: 'done', path: target });
+      toast({ kind: 'success', message: 'מסמך Word נוצר בהצלחה' });
     } catch (err) {
-      setState({
-        kind: 'error',
-        message: errMessage(err, 'יצירת המסמך נכשלה'),
-      });
+      const message = errMessage(err, 'יצירת המסמך נכשלה');
+      setState({ kind: 'error', message });
+      toast({ kind: 'error', message });
     }
   }
 
@@ -216,14 +228,27 @@ export function SummaryTab(): ReactNode {
 
       <Divider />
 
+      {/* ── Tags slot — union of every tab's selections (Maintenance Log 2026-05-21).
+            Always rendered (even when empty) so the summary view stays in
+            visual lockstep with the other tabs. ─────────────────────────── */}
+      <TagsDisplay
+        selections={[
+          ...ev.tableDesignSelections,
+          ...ev.chuppah.designSelections,
+          ...(ev.napkins.designSelections ?? []),
+          ...(ev.upgrades.designSelections ?? []),
+        ]}
+        testIdSuffix="summary"
+      />
+
+      <Divider />
+
       {/* ── Signature pad ─────────────────────────────────────────────── */}
       <div className="flex flex-col gap-4">
         <ChipLabel>חתימה</ChipLabel>
         <SignaturePad
-          initialDataUrl={ev.signature?.dataUrl}
-          onConfirm={(dataUrl, signedAt) =>
-            onConfirmSignature({ dataUrl, signedAt })
-          }
+          initialSignature={ev.signature}
+          onConfirm={(sig) => onConfirmSignature(sig)}
         />
       </div>
 
@@ -330,9 +355,10 @@ function SelectionsGrid({ items }: { items: ImageSelection[] }) {
                 key={sel.imagePath}
                 className="bg-ink border border-border-subtle p-2 flex flex-col gap-1"
               >
-                <div className="aspect-[4/3] bg-ink-raised flex items-center justify-center">
-                  <span className="text-tiny text-cream-muted">תמונה</span>
-                </div>
+                <SelectionThumbnail
+                  imagePath={sel.imagePath}
+                  imageName={sel.imageName}
+                />
                 <span className="text-small text-cream truncate" dir="auto">
                   {sel.imageName}
                 </span>

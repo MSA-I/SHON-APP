@@ -40,6 +40,7 @@ import {
   IMAGE_CATEGORIES,
   LibError,
 } from '../types';
+import { normalizeSignature } from './signature';
 
 // ===========================================================================
 // Constants
@@ -449,14 +450,29 @@ function normalizeImageTag(t: ImageTag): ImageTag {
 }
 
 function normalizeEvent(e: Event): Event {
+  // Maintenance Log 2026-05-21: napkins/upgrades each carry an optional
+  // `designSelections?: ImageSelection[]`. Absent → omit the field on output
+  // so v1 events that never opened the new tabs round-trip cleanly through
+  // export → import without acquiring an empty array they did not have.
+  const napkins: Event['napkins'] = {
+    color: nfc(e.napkins.color) as Event['napkins']['color'],
+    fabric: nfc(e.napkins.fabric) as Event['napkins']['fabric'],
+    foldType: nfc(e.napkins.foldType ?? ''),
+  };
+  if (e.napkins.designSelections !== undefined) {
+    napkins.designSelections = e.napkins.designSelections.map(normalizeSelection);
+  }
+  const upgrades: Event['upgrades'] = {
+    description: nfc(e.upgrades.description ?? ''),
+    items: (e.upgrades.items ?? []).map((s) => nfc(s)),
+  };
+  if (e.upgrades.designSelections !== undefined) {
+    upgrades.designSelections = e.upgrades.designSelections.map(normalizeSelection);
+  }
   return {
     ...e,
     notes: nfc(e.notes ?? ''),
-    napkins: {
-      color: nfc(e.napkins.color) as Event['napkins']['color'],
-      fabric: nfc(e.napkins.fabric) as Event['napkins']['fabric'],
-      foldType: nfc(e.napkins.foldType ?? ''),
-    },
+    napkins,
     chairs: {
       type: nfc(e.chairs.type) as Event['chairs']['type'],
       bridalChair: nfc(e.chairs.bridalChair ?? ''),
@@ -467,11 +483,14 @@ function normalizeEvent(e: Event): Event {
       aisleDetails: nfc(e.chuppah.aisleDetails ?? ''),
       designSelections: (e.chuppah.designSelections ?? []).map(normalizeSelection),
     },
-    upgrades: {
-      description: nfc(e.upgrades.description ?? ''),
-      items: (e.upgrades.items ?? []).map((s) => nfc(s)),
-    },
+    upgrades,
     tableDesignSelections: (e.tableDesignSelections ?? []).map(normalizeSelection),
+    // Maintenance Log 2026-05-21: Signature is dual-shape (png|vector). Legacy
+    // rows in IndexedDB lack a `kind` discriminator — normalize on every
+    // read/write so consumers never branch on the legacy shape. The function
+    // returns `null` for malformed values rather than throwing, keeping read
+    // paths resilient.
+    signature: normalizeSignature(e.signature),
   };
 }
 
@@ -640,6 +659,15 @@ function assertEventBodyValid(event: Event): void {
   }
   assertSelectionsValid(event.tableDesignSelections, 'tableDesignSelections');
   assertSelectionsValid(event.chuppah?.designSelections, 'chuppah.designSelections');
+  // Maintenance Log 2026-05-21: optional designSelections on napkins/upgrades.
+  assertSelectionsValid(
+    event.napkins?.designSelections,
+    'napkins.designSelections',
+  );
+  assertSelectionsValid(
+    event.upgrades?.designSelections,
+    'upgrades.designSelections',
+  );
 }
 
 export async function createEvent(
@@ -709,7 +737,10 @@ export async function getEvent(id: string): Promise<Event | undefined> {
   assertUuidV4(id, 'DB_NOT_FOUND');
   const db = await openDb();
   try {
-    return await db.get('events', id);
+    const raw = await db.get('events', id);
+    // Maintenance Log 2026-05-21: legacy rows lack the `kind` discriminator on
+    // `signature` — coerce on the way out so consumers see only the new shape.
+    return raw ? normalizeEvent(raw) : undefined;
   } catch (cause) {
     throw new LibError('getEvent failed', { code: 'DB_TX', id, cause });
   }
@@ -724,7 +755,8 @@ export async function listEventsByClient(clientId: string): Promise<Event[]> {
     const idx = tx.store.index('byClientId');
     let cursor = await idx.openCursor(IDBKeyRange.only(clientId));
     while (cursor) {
-      out.push(cursor.value);
+      // Coerce legacy signature shape on the way out (Maintenance Log 2026-05-21).
+      out.push(normalizeEvent(cursor.value));
       cursor = await cursor.continue();
     }
     await tx.done;
@@ -751,7 +783,7 @@ export async function listEventsByStatus(status: EventStatus): Promise<Event[]> 
     const idx = tx.store.index('byStatus');
     let cursor = await idx.openCursor(IDBKeyRange.only(status));
     while (cursor) {
-      out.push(cursor.value);
+      out.push(normalizeEvent(cursor.value));
       cursor = await cursor.continue();
     }
     await tx.done;
@@ -1189,7 +1221,8 @@ export async function exportAll(): Promise<DbExport> {
     const events: Event[] = [];
     let ec = await tx.objectStore('events').openCursor();
     while (ec) {
-      events.push(ec.value);
+      // Coerce legacy signature shape on export (Maintenance Log 2026-05-21).
+      events.push(normalizeEvent(ec.value));
       ec = await ec.continue();
     }
 

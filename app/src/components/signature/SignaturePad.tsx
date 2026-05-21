@@ -1,22 +1,23 @@
-// SOP: architecture/06-signature-flow.md
-// Mockup: .tmp/stitch-mockups/stitch_shon_blaish_luxury_planner/signature_dark/screen.png
+// SOP: architecture/06-signature-flow.md (Self-Annealing 2026-05-21)
+// Schema: claude.md § Data Schemas (Signature) — Maintenance Log 2026-05-21
 //
 // Signature pad — wraps `react-signature-canvas` with the Luxury Editorial
 // design language. Used inline on the Summary tab (per SOP 06 § Capture
 // Pipeline — no modal). The component is **uncontrolled during drawing**:
 // strokes live inside the canvas until "אישור וחתימה" reads them out via
-// `toDataURL('image/png')` and bubbles them up through `onConfirm`.
+// `toData()` (vector) and bubbles them up through `onConfirm` as the new
+// dual-shape `Signature` value.
 //
-// `onConfirm(dataUrl, signedAt)` deviates from the SOP's `(dataUrl)` signature
-// by also yielding `signedAt = Date.now()` — the calling SummaryTab needs both
-// fields atomically to write `event.signature = { dataUrl, signedAt }` and
-// flip status to `'signed'`. SOP 06 Self-Annealing Notes will be updated when
-// the Summary tab lands; the spec's invariant (`signed ⇒ signature !== null`)
-// is preserved either way.
+// On display:
+//   • `kind: 'png'`    → renders the dataUrl in <img> (legacy data path).
+//   • `kind: 'vector'` → renders an inline <svg> with stroke="currentColor"
+//                        so the ink follows the active UI theme. This is the
+//                        fix for the user complaint "החתימה צריכה להיות
+//                        נראית לעין כשהתפריט עובר ממצב כהה לבהיר".
 //
 // Imports rule (SOP 15 §7 "Layer 2 imports"): only `react`,
-// `react-signature-canvas`, and sibling files under `../ui/*` are allowed.
-// No lib/, no Tauri, no idb. Confirmed.
+// `react-signature-canvas`, project `types`, and sibling files under
+// `../ui/*` are allowed. No lib/, no Tauri, no idb. Confirmed.
 
 import {
   useCallback,
@@ -29,13 +30,23 @@ import {
 } from 'react';
 import SignatureCanvas from 'react-signature-canvas';
 
+import type { Signature, SignatureStroke } from '../../types';
+
 // ─── Public surface ──────────────────────────────────────────────────────────
 
 export type SignaturePadProps = {
-  /** Present iff editing an existing signature; renders the read-only view. */
-  initialDataUrl?: string;
-  /** Fired on "אישור וחתימה". `signedAt = Date.now()` at click time. */
-  onConfirm: (dataUrl: string, signedAt: number) => void;
+  /**
+   * Present iff editing an existing signature; renders the read-only view.
+   * Dual-shape — PNG for legacy data, vector for new captures. The pad
+   * decides how to render based on `initialSignature.kind`.
+   */
+  initialSignature?: Signature | null;
+  /**
+   * Fired on "אישור וחתימה" with the captured `Signature`. New captures emit
+   * `kind: 'vector'`; the pad never produces a PNG itself anymore (legacy
+   * data flows through `initialSignature` for read-only display only).
+   */
+  onConfirm: (signature: Signature) => void;
   /** Optional escape hatch — e.g. for an inline "skip" link upstream. */
   onCancel?: () => void;
 };
@@ -45,11 +56,9 @@ export type SignaturePadProps = {
 const CANVAS_WIDTH = 600;
 const CANVAS_HEIGHT = 180;
 
-/**
- * Hebrew month names in declarative form (used after a number, e.g. "20 במאי").
- * Source: standard Hebrew calendar Gregorian month names. Inlined per SOP 15
- * §3 "no i18n layer".
- */
+/** Fallback stroke width when `react-signature-canvas` does not surface one. */
+const DEFAULT_STROKE_WIDTH = 2;
+
 const HEBREW_MONTHS = [
   'בינואר',
   'בפברואר',
@@ -73,43 +82,28 @@ function formatHebrewLongDate(ms: number): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function SignaturePad({
-  initialDataUrl,
+  initialSignature,
   onConfirm,
   onCancel,
 }: SignaturePadProps) {
   const padRef = useRef<SignatureCanvas | null>(null);
 
   /**
-   * Read-only mode is sticky to whether `initialDataUrl` *was ever supplied*.
-   * Once the user clicks "עריכה" we drop into the canvas-editing state and
-   * stay there until the next confirm — at which point the parent will pass
-   * a new `initialDataUrl` (or omit it).
-   *
-   * `editing` is initialized from props, then user-controlled. We do NOT
-   * re-derive it on every render, otherwise an upstream re-render after
-   * confirm would yo-yo the user back into read-only mid-flow.
+   * Read-only mode is sticky to whether a signature was supplied at mount.
+   * Once the user clicks "עריכה" we drop into the canvas-editing state.
    */
-  const [editing, setEditing] = useState<boolean>(!initialDataUrl);
-
-  /** Disables Confirm until the user has put at least one stroke down. */
+  const [editing, setEditing] = useState<boolean>(!initialSignature);
   const [hasStroke, setHasStroke] = useState<boolean>(false);
 
-  /** Live date stamp — recomputed each mount; tabular-numeric in the UI. */
   const todayStamp = useMemo(() => formatHebrewLongDate(Date.now()), []);
 
-  // SOP 06 Failure Modes: reset stroke flag whenever we re-enter editing mode
-  // (e.g. user clicks "עריכה" on a previously confirmed signature).
   useEffect(() => {
-    if (editing) {
-      setHasStroke(false);
-    }
+    if (editing) setHasStroke(false);
   }, [editing]);
 
   const handleEnd = useCallback(() => {
     const pad = padRef.current;
-    if (pad && !pad.isEmpty()) {
-      setHasStroke(true);
-    }
+    if (pad && !pad.isEmpty()) setHasStroke(true);
   }, []);
 
   const handleClear = useCallback(() => {
@@ -119,27 +113,76 @@ export function SignaturePad({
 
   const handleConfirm = useCallback(() => {
     const pad = padRef.current;
-    if (!pad || pad.isEmpty()) {
-      // Defensive — the button is disabled in this state, but a keyboard
-      // activation race could theoretically slip through.
+    if (!pad || pad.isEmpty()) return;
+
+    // SOP 06 §4 — capture timestamp at the same instant as the strokes.
+    // `toData()` is the source of truth for the new vector shape; we never
+    // emit a PNG from the pad anymore (the docx exporter rasterizes at
+    // export time per Behavioral Rule #13, and the on-screen render uses
+    // currentColor).
+    //
+    // The @types/signature_pad d.ts types `toData()` as `Point[][]`, but the
+    // actual signature_pad runtime returns `{ color, points: Point[] }[]`.
+    // We coerce defensively via `unknown` and accept either shape.
+    const rawData = (pad.toData() as unknown) as unknown[];
+    const strokes: SignatureStroke[] = rawData
+      .map((entry): SignatureStroke | null => {
+        if (!entry) return null;
+        // Shape A (modern): { points: Point[], minWidth?, maxWidth?, ... }
+        const e = entry as { points?: unknown };
+        if (Array.isArray(e.points)) {
+          const points = (e.points as unknown[])
+            .map((p) => {
+              if (!p || typeof p !== 'object') return null;
+              const px = (p as { x?: unknown }).x;
+              const py = (p as { y?: unknown }).y;
+              if (typeof px === 'number' && typeof py === 'number') {
+                return { x: px, y: py };
+              }
+              return null;
+            })
+            .filter((v): v is { x: number; y: number } => v !== null);
+          if (points.length === 0) return null;
+          return { points, width: DEFAULT_STROKE_WIDTH };
+        }
+        // Shape B (legacy d.ts type): Point[] directly.
+        if (Array.isArray(entry)) {
+          const points = (entry as unknown[])
+            .map((p) => {
+              if (!p || typeof p !== 'object') return null;
+              const px = (p as { x?: unknown }).x;
+              const py = (p as { y?: unknown }).y;
+              if (typeof px === 'number' && typeof py === 'number') {
+                return { x: px, y: py };
+              }
+              return null;
+            })
+            .filter((v): v is { x: number; y: number } => v !== null);
+          if (points.length === 0) return null;
+          return { points, width: DEFAULT_STROKE_WIDTH };
+        }
+        return null;
+      })
+      .filter((s): s is SignatureStroke => s !== null);
+
+    if (strokes.length === 0) {
+      // Defensive — pad reported non-empty but we couldn't extract any
+      // strokes. Don't emit a malformed signature.
       return;
     }
-    // SOP 06 §4 — read PNG via toDataURL, capture timestamp at the same
-    // instant. We pass both up so the parent's IndexedDB write is atomic.
-    const dataUrl = pad.toDataURL('image/png');
-    onConfirm(dataUrl, Date.now());
+
+    onConfirm({
+      kind: 'vector',
+      strokes,
+      width: CANVAS_WIDTH,
+      height: CANVAS_HEIGHT,
+      signedAt: Date.now(),
+    });
   }, [onConfirm]);
 
   const handleEdit = useCallback(() => {
     setEditing(true);
   }, []);
-
-  // ─── Inline styles for the canvas frame ───────────────────────────────────
-  //
-  // The canvas needs a fixed pixel size (the underlying drawing buffer is
-  // sized in CSS pixels) and a 1px gold underline per the mockup. We keep
-  // the wrapper as a Tailwind-utility surface for theme reactivity, and use
-  // inline styles only for the dimensions and the hairline.
 
   const canvasFrameStyle: CSSProperties = {
     width: CANVAS_WIDTH,
@@ -150,32 +193,25 @@ export function SignaturePad({
     position: 'relative',
   };
 
-  // ─── Render ────────────────────────────────────────────────────────────────
-
   return (
     <section
       data-testid="signature-pad"
       dir="rtl"
       className="flex flex-col items-center w-full"
     >
-      {/* Small label above the canvas — mirrors mockup "חתימת הזוג". */}
       <h2 className="font-serif text-h3 text-cream mb-6">חתימת הזוג</h2>
 
-      {/* aria-live region for the post-confirm success announcement
-          (SOP 06 § Accessibility). Empty until a confirm round-trips back
-          into read-only mode. */}
       <div className="sr-only" aria-live="polite">
-        {!editing && initialDataUrl ? 'חתימה נשמרה' : ''}
+        {!editing && initialSignature ? 'חתימה נשמרה' : ''}
       </div>
 
       {editing ? (
-        // ─── Drawing mode ────────────────────────────────────────────────
         <div style={canvasFrameStyle}>
           <SignatureCanvas
             ref={(instance) => {
               padRef.current = instance;
             }}
-            penColor="#F5F0E8" /* --color-cream */
+            penColor="#F5F0E8" /* --color-cream — visible while drawing */
             backgroundColor="rgba(0,0,0,0)"
             canvasProps={
               {
@@ -195,21 +231,8 @@ export function SignaturePad({
           />
         </div>
       ) : (
-        // ─── Read-only mode (initialDataUrl supplied) ───────────────────
         <div style={canvasFrameStyle}>
-          <img
-            src={initialDataUrl}
-            alt="חתימת הזוג"
-            data-testid="signature-pad-image"
-            style={{
-              width: CANVAS_WIDTH,
-              height: CANVAS_HEIGHT,
-              display: 'block',
-              objectFit: 'contain',
-            }}
-          />
-          {/* Diamond corner marker — mockup detail; sits in the
-              inline-start corner under RTL flow. */}
+          <SignatureView signature={initialSignature ?? null} />
           <span
             aria-hidden="true"
             className="font-serif text-gold absolute top-2 select-none"
@@ -220,11 +243,6 @@ export function SignaturePad({
         </div>
       )}
 
-      {/* ─── Action row ────────────────────────────────────────────────────
-          Layout per mockup:
-            inline-start: "ניקוי" / "עריכה" tertiary
-            inline-end:   date stamp + "אישור וחתימה" primary
-          Width matches the canvas above. */}
       <div
         className="flex items-center justify-between w-full mt-6"
         style={{ maxWidth: CANVAS_WIDTH }}
@@ -289,9 +307,6 @@ export function SignaturePad({
               אישור וחתימה
             </button>
           ) : onCancel ? (
-            // In read-only mode we expose the optional cancel as a tertiary
-            // — it's not in the mockup, but the prop contract permits it
-            // and we shouldn't silently swallow a supplied callback.
             <button
               type="button"
               onClick={onCancel}
@@ -311,4 +326,88 @@ export function SignaturePad({
       </div>
     </section>
   );
+}
+
+// ─── Read-only signature view (theme-reactive ink) ───────────────────────────
+
+/**
+ * Render a saved `Signature` in read-only mode:
+ *
+ *  • PNG (legacy): `<img src={dataUrl}>` exactly as the previous component
+ *    did. Cream ink baked into the PNG; visible against the dark canvas
+ *    frame, less so against light. Old data is left as-is per the
+ *    "don't touch old data" rule.
+ *
+ *  • Vector: inline `<svg>` with `stroke="currentColor"`. The wrapper sets
+ *    color to `var(--color-cream)` which the Tailwind v4 light-theme
+ *    invert flips appropriately, so the ink stays legible in both themes.
+ */
+function SignatureView({ signature }: { signature: Signature | null }) {
+  if (!signature) {
+    return (
+      <span
+        aria-hidden="true"
+        className="absolute inset-0 flex items-center justify-center text-cream-muted text-small"
+      >
+        —
+      </span>
+    );
+  }
+  if (signature.kind === 'png') {
+    return (
+      <img
+        src={signature.dataUrl}
+        alt="חתימת הזוג"
+        data-testid="signature-pad-image"
+        style={{
+          width: CANVAS_WIDTH,
+          height: CANVAS_HEIGHT,
+          display: 'block',
+          objectFit: 'contain',
+        }}
+      />
+    );
+  }
+  // kind === 'vector' — re-render strokes in SVG, inheriting color from the
+  // theme via `currentColor`.
+  const pathD = strokesToSvgPath(signature.strokes);
+  return (
+    <svg
+      data-testid="signature-pad-svg"
+      role="img"
+      aria-label="חתימת הזוג"
+      viewBox={`0 0 ${signature.width} ${signature.height}`}
+      width={CANVAS_WIDTH}
+      height={CANVAS_HEIGHT}
+      style={{
+        display: 'block',
+        // `text-cream` resolves to a CSS variable that the light-theme
+        // override flips to dark ink. Either way, `currentColor` follows.
+        color: 'var(--color-cream, #F5F0E8)',
+      }}
+      className="text-cream"
+    >
+      <path
+        d={pathD}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function strokesToSvgPath(strokes: SignatureStroke[]): string {
+  const parts: string[] = [];
+  for (const s of strokes) {
+    if (s.points.length === 0) continue;
+    const [first, ...rest] = s.points;
+    parts.push(`M ${first.x.toFixed(2)} ${first.y.toFixed(2)}`);
+    for (const p of rest) {
+      parts.push(`L ${p.x.toFixed(2)} ${p.y.toFixed(2)}`);
+    }
+  }
+  return parts.join(' ');
 }

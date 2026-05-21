@@ -1,20 +1,36 @@
 // SOP: claude.md § Event (napkins, reception)
 // SOP: architecture/11-domain-invariants.md INV-04
 //      (napkins.color === 'אחר' requires non-empty witness in foldType / notes)
+// SOP: architecture/05-gallery-selection.md (Gallery accepts mode='napkins')
+// Maintenance Log 2026-05-21: per Agent C task brief, every event tab gets a
+// gallery picker AND a tags slot. Napkin selections live on the optional
+// `napkins.designSelections` extension to the Event schema.
 //
-// Captures napkin color/fabric/fold + the "reception at resort" toggle.
-// INV-04 is enforced HERE at the UI layer per the SOP: when color === 'אחר',
-// surface a required text input ("פירוט צבע") that writes back into
-// napkins.foldType. The "המשך" button (in EventTabs) is disabled by reading
-// `eventCtx.unsavedChanges` and a derived validity flag — but per the locked
-// SOP, db.ts only soft-warns, so the UI is the primary gate.
+// Captures napkin color/fabric/fold + the "reception at resort" toggle, plus
+// (new) reference-image selections from the "מפות מפיות" gallery and a
+// TagsDisplay slot. INV-04 is enforced HERE at the UI layer per the SOP:
+// when color === 'אחר', surface a required text input ("פירוט צבע") that
+// writes back into napkins.foldType. The "המשך" button (in EventTabs) is
+// disabled by reading `eventCtx.unsavedChanges` and a derived validity flag
+// — but per the locked SOP, db.ts only soft-warns, so the UI is the
+// primary gate.
 
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { Plus, X } from 'lucide-react';
 
 import { useEvent } from '../../contexts/EventContext';
-import type { Napkins, NapkinColor, NapkinFabric } from '../../types';
+import type {
+  Event,
+  ImageSelection,
+  Napkins,
+  NapkinColor,
+  NapkinFabric,
+} from '../../types';
 
 import { ChipLabel, RadioChip, SectionHeader } from './EventDetailsTab';
+import { Gallery } from '../gallery/Gallery';
+import { TagsDisplay } from './TagsDisplay';
+import { SelectionThumbnail } from './SelectionThumbnail';
 
 const NAPKIN_COLORS: readonly NapkinColor[] = [
   'וורד עתיק',
@@ -27,7 +43,12 @@ const NAPKIN_FABRICS: readonly NapkinFabric[] = ['פניה', 'סטן'] as const;
 export function NapkinsTab(): ReactNode {
   const ctx = useEvent();
   const ev = ctx.currentEvent;
+  const [galleryOpen, setGalleryOpen] = useState(false);
+
   if (!ev) return null;
+
+  // Maintenance Log 2026-05-21: optional designSelections — treat absent as [].
+  const selections: ImageSelection[] = ev.napkins.designSelections ?? [];
 
   function patchNapkins(patch: Partial<Napkins>) {
     ctx.dispatch({
@@ -40,6 +61,28 @@ export function NapkinsTab(): ReactNode {
     ctx.dispatch({
       type: 'patch-event',
       patch: { reception: { atResort } },
+    });
+  }
+
+  function updateNotes(path: string, notes: string) {
+    const next: ImageSelection[] = selections.map((s) =>
+      s.imagePath === path ? { ...s, notes } : s,
+    );
+    ctx.dispatch({
+      type: 'patch-event',
+      patch: {
+        napkins: { ...ev!.napkins, designSelections: next },
+      } as Partial<Event>,
+    });
+  }
+
+  function removeAt(path: string) {
+    const next = selections.filter((s) => s.imagePath !== path);
+    ctx.dispatch({
+      type: 'patch-event',
+      patch: {
+        napkins: { ...ev!.napkins, designSelections: next },
+      } as Partial<Event>,
     });
   }
 
@@ -150,6 +193,94 @@ export function NapkinsTab(): ReactNode {
           </div>
         </form>
       </div>
+
+      {/* ── Reference images (gallery picker) ────────────────────────── */}
+      <div className="mt-12">
+        <div className="flex items-center justify-between mb-6">
+          <ChipLabel>השראה למפיות ({selections.length})</ChipLabel>
+          <button
+            type="button"
+            onClick={() => setGalleryOpen(true)}
+            data-testid="open-gallery-napkins-button"
+            className="inline-flex items-center gap-2 border border-gold text-cream font-sans px-6 py-2 hover:border-gold-dark transition-colors duration-150 ease-[cubic-bezier(0.4,0,0.2,1)] cursor-pointer"
+          >
+            <Plus size={16} aria-hidden="true" />
+            <span>פתח גלריה</span>
+          </button>
+        </div>
+
+        {selections.length === 0 ? (
+          <div className="bg-ink-raised border border-border-subtle p-8 text-center">
+            <p className="font-serif text-h3 text-cream-muted">
+              עדיין לא נבחרו תמונות מפיות
+            </p>
+          </div>
+        ) : (
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {selections.map((sel) => (
+              <li
+                key={sel.imagePath}
+                data-testid={`napkins-card-${sel.imagePath}`}
+                className="bg-ink-raised border border-border-subtle p-4 flex flex-col gap-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex flex-col">
+                    <ChipLabel>{sel.category}</ChipLabel>
+                    <span className="font-serif text-h3 text-cream mt-1" dir="auto">
+                      {sel.imageName}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeAt(sel.imagePath)}
+                    aria-label="הסר בחירה"
+                    data-testid={`napkins-remove-${sel.imagePath}`}
+                    className="text-cream-muted hover:text-gold transition-colors"
+                  >
+                    <X size={18} aria-hidden="true" />
+                  </button>
+                </div>
+                <SelectionThumbnail
+                  imagePath={sel.imagePath}
+                  imageName={sel.imageName}
+                />
+                <label className="flex flex-col gap-2">
+                  <ChipLabel>הערה</ChipLabel>
+                  <textarea
+                    rows={2}
+                    value={sel.notes}
+                    onChange={(e) => updateNotes(sel.imagePath, e.target.value)}
+                    placeholder="הערות לבחירה זו"
+                    data-testid={`napkins-notes-${sel.imagePath}`}
+                    className="w-full bg-transparent border-0 border-b border-border-subtle pb-2 px-0 text-cream font-sans rounded-none focus:outline-none focus:border-gold resize-none transition-colors duration-150"
+                  />
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* ── Tags slot (always rendered, empty-state aware) ───────────── */}
+      <div className="mt-8">
+        <TagsDisplay selections={selections} testIdSuffix="napkins" />
+      </div>
+
+      {galleryOpen && (
+        <Gallery
+          mode="napkins"
+          selections={selections}
+          onClose={(nextSelections) => {
+            ctx.dispatch({
+              type: 'patch-event',
+              patch: {
+                napkins: { ...ev.napkins, designSelections: nextSelections },
+              } as Partial<Event>,
+            });
+            setGalleryOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

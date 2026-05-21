@@ -22,6 +22,8 @@ import type {
 
 import { ChipLabel, RadioChip, SectionHeader } from './EventDetailsTab';
 import { Gallery } from '../gallery/Gallery';
+import { TagsDisplay } from './TagsDisplay';
+import { SelectionThumbnail } from './SelectionThumbnail';
 
 const CHUPPAH_TYPES: readonly ChuppahType[] = [
   'מרובעת',
@@ -182,9 +184,10 @@ export function ChuppahTab(): ReactNode {
                     <X size={18} aria-hidden="true" />
                   </button>
                 </div>
-                <div className="aspect-[4/3] bg-ink border border-border-subtle flex items-center justify-center">
-                  <span className="text-tiny text-cream-muted">תמונה</span>
-                </div>
+                <SelectionThumbnail
+                  imagePath={sel.imagePath}
+                  imageName={sel.imageName}
+                />
                 <label className="flex flex-col gap-2">
                   <ChipLabel>הערה</ChipLabel>
                   <textarea
@@ -200,6 +203,11 @@ export function ChuppahTab(): ReactNode {
             ))}
           </ul>
         )}
+      </div>
+
+      {/* ── Tags slot (always rendered, empty-state aware) ───────────── */}
+      <div className="mt-8">
+        <TagsDisplay selections={selections} testIdSuffix="chuppah" />
       </div>
 
       {galleryOpen && (

@@ -20,8 +20,7 @@
  */
 
 import { useState, type CSSProperties } from "react";
-import { ThemeToggle } from "../ui/curtain-theme-toggle";
-import { useTheme } from "../../contexts/ThemeContext";
+import { AnimatedThemeToggler } from "../ui/animated-theme-toggler";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +34,13 @@ export type AppBarProps = {
   breadcrumb?: BreadcrumbSegment[];
   /** Hide the theme toggle on screens that don't want it. Default `true`. */
   showThemeToggle?: boolean;
+  /**
+   * Click handler for the brand mark. Wired by the parent shell to navigate
+   * back to Home (SOP 13 § AppView). When omitted, the logo renders as a
+   * non-interactive `<img>` (e.g. on Home itself, where "go to Home" is a
+   * no-op).
+   */
+  onLogoClick?: () => void;
 };
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -47,9 +53,7 @@ const barStyle: CSSProperties = {
   paddingInline: "1.5rem",
 };
 
-export function AppBar({ breadcrumb, showThemeToggle = true }: AppBarProps) {
-  const { theme, setTheme } = useTheme();
-
+export function AppBar({ breadcrumb, showThemeToggle = true, onLogoClick }: AppBarProps) {
   return (
     <header
       data-testid="app-bar"
@@ -62,14 +66,7 @@ export function AppBar({ breadcrumb, showThemeToggle = true }: AppBarProps) {
     >
       {/* ── Inline-start (visual left): Theme toggle ──────────────────────── */}
       <div className="flex items-center">
-        {showThemeToggle && (
-          <ThemeToggle
-            variant="icon"
-            defaultTheme={theme}
-            buttonSize={36}
-            onThemeChange={(next) => setTheme(next)}
-          />
-        )}
+        {showThemeToggle && <AnimatedThemeToggler size={20} />}
       </div>
 
       {/* ── Center: Breadcrumb chips ──────────────────────────────────────── */}
@@ -111,20 +108,11 @@ export function AppBar({ breadcrumb, showThemeToggle = true }: AppBarProps) {
         </nav>
       )}
 
-      {/* ── Inline-end (visual right): Brand mark + wordmark ──────────────── */}
-      <div className="flex items-center gap-3">
-        <span
-          className="font-serif text-cream"
-          style={{
-            fontSize: "18px",
-            fontWeight: 500,
-            lineHeight: 1.15,
-          }}
-        >
-          שון בלאיש
-          <span className="text-cream-muted"> — הפקות</span>
-        </span>
-        <BrandLogo />
+      {/* ── Inline-end (visual right): Brand mark ─────────────────────────
+          Logo-only: the SVG already renders "שון בלאיש · הפקות". Wordmark
+          text was removed 2026-05-21 to eliminate redundancy. */}
+      <div className="flex items-center">
+        <BrandLogo onClick={onLogoClick} />
       </div>
     </header>
   );
@@ -132,34 +120,55 @@ export function AppBar({ breadcrumb, showThemeToggle = true }: AppBarProps) {
 
 // ─── Brand mark ───────────────────────────────────────────────────────────────
 //
-// Renders `/logo-light.svg` (cream + gold variant). The asset is mounted under
-// `app/public/` by another agent. If the file is missing at runtime, the
-// `<img>` fallback degrades to alt text — no layout shift, no console error
-// thrown by React itself.
+// Renders `/logo-light.svg` (cream variant for the dark UI). The asset is
+// mounted under `app/public/`. If the file is missing at runtime, the `<img>`
+// fallback degrades to a glyph — no layout shift, no console error thrown by
+// React itself.
 //
-function BrandLogo() {
+// When `onClick` is supplied, the logo is wrapped in a <button> so it acts as
+// the "home" affordance (Constitution § Identity — clicking the logo returns
+// the user to the main menu). When omitted, the logo renders as a plain image.
+//
+function BrandLogo({ onClick }: { onClick?: () => void }) {
   const [errored, setErrored] = useState(false);
 
-  if (errored) {
-    return (
-      <span
-        aria-hidden="true"
-        className="font-serif text-gold"
-        style={{ fontSize: "20px", lineHeight: 1 }}
-      >
-        ❖
-      </span>
-    );
-  }
-
-  return (
+  const inner = errored ? (
+    <span
+      aria-hidden="true"
+      className="font-serif text-gold"
+      style={{ fontSize: "20px", lineHeight: 1 }}
+    >
+      ❖
+    </span>
+  ) : (
     <img
       src="/logo-light.svg"
-      alt="שון בלאיש"
+      alt="שון בלאיש — חזרה לתפריט הראשי"
       width={32}
       height={32}
       style={{ display: "block", height: 32, width: "auto" }}
       onError={() => setErrored(true)}
     />
+  );
+
+  if (!onClick) return inner;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid="brand-logo-home"
+      aria-label="חזרה לתפריט הראשי"
+      className="
+        flex items-center justify-center
+        bg-transparent border-0 cursor-pointer p-1
+        rounded-md
+        transition-transform duration-150
+        hover:scale-105 active:scale-95
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold
+      "
+    >
+      {inner}
+    </button>
   );
 }
