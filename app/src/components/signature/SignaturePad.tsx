@@ -316,9 +316,13 @@ export function SignaturePad({
                 pulsing && !reduce
                   ? {
                       scale: [1, 1.04, 1],
+                      // Reviewer: keep the ring strictly within the
+                      // hairline-ring contract (1px spread, zero blur).
+                      // 2px read as a thicker ring; 1px is the same shape
+                      // the user explicitly ratified for Button.tsx.
                       boxShadow: [
                         '0 0 0 0px var(--cream)',
-                        '0 0 0 2px var(--cream)',
+                        '0 0 0 1px var(--cream)',
                         '0 0 0 0px var(--cream)',
                       ],
                     }
