@@ -1,8 +1,8 @@
 # שון בלאיש — אפליקציית תכנון אירועים
 
-אפליקציית דסקטופ מקומית למעצב האירועים שון בלאיש — פגישות לקוחות, בחירת עיצובים, חתימה דיגיטלית וייצוא DOCX יוקרתי.
+אפליקציית דסקטופ מקומית למעצב האירועים שון בלאיש — פגישות לקוחות, בחירת עיצובים, חתימה דיגיטלית, ייצוא DOCX יוקרתי, ושיתוף ישיר עם הזוג בוואטסאפ / אימייל.
 
-**Stack:** Tauri 2 · React 19 · TypeScript · Vite 7 · Tailwind v4 · IndexedDB · docx@8
+**Stack:** Tauri 2 · React 19 · TypeScript · Vite 7 · Tailwind v4 · IndexedDB · docx@8 · Framer Motion 12
 
 > **Local-first.** אין שרת, אין ענן, אין התחברות. הכל נשמר במכונה של שון.
 > **Hebrew RTL** מכל קצה לקצה.
@@ -32,16 +32,18 @@ cd "F:/MyFiles/העסק שלי/שון בלאיש/app"
 npm install
 
 # 3. בנייה ל-installer (.exe)
-npm run tauri:build -- --bundles nsis
+npm run tauri:build
 ```
 
-ה-installer יווצר ב:
+ה-bundle target ב-`tauri.conf.json` נעול ל-`nsis` (WiX/MSI נכשל בנתיבים עם עברית). ה-installer יווצר ב:
 
 ```
 app/src-tauri/target/release/bundle/nsis/Shon Blaish_<version>_x64-setup.exe
 ```
 
 הרצת ה-installer פעם אחת — והאפליקציה זמינה כקיצור דרך רגיל.
+
+> **אם בילד נתקע / האייקון לא מתעדכן:** הרץ `cd app/src-tauri && cargo clean` ואז `npm run tauri:build` שוב. `tauri-winres` מטביע את האייקון לתוך ה-exe רק על קומפילציה מלאה של ה-crate.
 
 ---
 
@@ -55,8 +57,8 @@ npm run tauri:dev    # פותח את האפליקציה עם hot reload
 טסטים:
 
 ```bash
-npm test             # vitest run (153 טסטים)
-npm run typecheck    # tsc --noEmit
+npx vitest run       # 178 טסטים (11 test files)
+npx tsc --noEmit     # type check
 ```
 
 ---
@@ -102,6 +104,20 @@ F:/MyFiles/העסק שלי/שון בלאיש/
 
 ---
 
+## תזרים פגישת לקוח (End-to-End)
+
+1. **לקוח חדש** → שמות בני הזוג + טלפון (+ אימייל אופציונלי).
+2. **אירוע חדש** → 6 טאבים: פרטי אירוע · מפיות · עיצובי שולחן · חופה · שדרוגים · סיכום.
+3. בכל טאב עם תמונות יש כפתור **"פתח גלריה"** + תצוגת **תגיות** (מסונכרנות עם ה-Tagging Pass).
+4. במסך **סיכום** הזוג חותם דיגיטלית (vector strokes — נצבעים לפי theme).
+5. לחיצה על **"ייצוא Word"** מייצרת `events/<event-id>/plan.docx` (תמיד light theme — ראה Behavioral Rule #13 ב-`claude.md`).
+6. **שיתוף ישיר אחרי הייצוא** (חדש 2026-05-21):
+   - **שלח באימייל** — פותח לקוח אימייל ברירת־מחדל עם נושא + body בעברית.
+   - **שלח בוואטסאפ** — פותח `wa.me` עם הודעה מוכנה (טלפון מנורמל ל-`972...`).
+   - בשני המקרים תיקיית האירוע נפתחת אוטומטית ב-Explorer לגרירת הקובץ ידנית (אין attachment slot ב-`mailto:` או ב-`wa.me`).
+
+---
+
 ## גיבוי ושחזור
 
 | פעולה | מיקום |
@@ -117,7 +133,7 @@ F:/MyFiles/העסק שלי/שון בלאיש/
 
 ראה [`claude.md`](claude.md) לחוקה המלאה. הכי חשוב:
 
-1. **אין רשת** — שום API חיצוני, שום הרשאות, שום ענן.
+1. **אין רשת** — שום API חיצוני, שום הרשאות, שום ענן. כפתורי השיתוף משתמשים ב-`tauri-plugin-opener` עם scope מצומצם (`mailto:*`, `https://wa.me/*`, `https://api.whatsapp.com/*` בלבד) שמעביר את ה-URL ל-OS — האפליקציה עצמה לא מבצעת fetch.
 2. **תמונות נשארות במקום** — האפליקציה לא מעתיקה אותן.
 3. **DOCX תמיד בהיר** — גם אם המשתמש בחר theme כהה ב-UI.
 4. **אין מחירים** — שדרוגים הם טקסט תיאורי בלבד.
