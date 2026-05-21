@@ -108,7 +108,8 @@ export type MetaKey =
   | 'lastScanAt'
   | 'lastImportAt'
   | 'taggingComplete'
-  | 'theme';                       // SOP 14 — Light/Dark theme toggle
+  | 'theme'                        // SOP 14 — Light/Dark theme toggle
+  | 'lastWelcomeDate';             // Phase WOW — yyyy-mm-dd of last shown welcome screen
 
 type MetaRow = {
   key: MetaKey;
@@ -1131,6 +1132,7 @@ const META_KEYS: ReadonlySet<MetaKey> = new Set<MetaKey>([
   'lastImportAt',
   'taggingComplete',
   'theme',
+  'lastWelcomeDate',
 ]);
 
 function assertMetaKey(key: string): asserts key is MetaKey {
@@ -1419,6 +1421,117 @@ export async function importAll(
   }
 
   return { clientsWritten, eventsWritten, imageTagsWritten };
+}
+
+// ===========================================================================
+// Welcome screen — Phase WOW stat helpers
+// ===========================================================================
+//
+// Read-only helpers powering the daily greeting interstitial
+// (`<WelcomeScreen />`). Schema-additive only — they read from the existing
+// `clients` and `events` stores via cursor walks, never write. Failure is
+// degraded silently (return 0 / undefined) so a stat read can NEVER block
+// the route into Home — the greeting is decorative, not gating.
+
+/**
+ * Active = any client that has at least one Event. We could also count by
+ * `Client.updatedAt > 90 days ago`, but the simpler "client with events"
+ * definition matches Shon's mental model ("הלקוחות שאני עובד איתם עכשיו").
+ */
+export async function countActiveClients(): Promise<number> {
+  try {
+    const db = await openDb();
+    const tx = db.transaction(['clients', 'events'], 'readonly');
+    const eventsIdx = tx.objectStore('events').index('byClientId');
+    const clientsStore = tx.objectStore('clients');
+
+    let active = 0;
+    let cursor = await clientsStore.openCursor();
+    while (cursor) {
+      const has = await eventsIdx.openCursor(IDBKeyRange.only(cursor.value.id));
+      if (has) active += 1;
+      cursor = await cursor.continue();
+    }
+    await tx.done;
+    return active;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Count of events whose ISO `date` (yyyy-mm-dd) falls inside the current
+ * calendar month, local time. Cursor walk over the events store; cheap even
+ * for thousands of rows because we touch only the date string.
+ */
+export async function countEventsThisMonth(): Promise<number> {
+  try {
+    const db = await openDb();
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const prefix = `${yyyy}-${mm}-`;
+
+    const tx = db.transaction('events', 'readonly');
+    let count = 0;
+    let cursor = await tx.store.openCursor();
+    while (cursor) {
+      if (typeof cursor.value.date === 'string' && cursor.value.date.startsWith(prefix)) {
+        count += 1;
+      }
+      cursor = await cursor.continue();
+    }
+    await tx.done;
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The next event whose ISO date is on or after today. Returns the event
+ * record + a hydrated `coupleNames` field by joining against `clients`. If
+ * no upcoming events exist, returns `undefined`.
+ */
+export async function getNextUpcomingEvent(): Promise<
+  | { event: Event; coupleNames: string }
+  | undefined
+> {
+  try {
+    const db = await openDb();
+    const today = (() => {
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    })();
+
+    const tx = db.transaction(['events', 'clients'], 'readonly');
+    let nextEvent: Event | undefined;
+
+    // byDate index sorts ascending by ISO date — first record with date >= today wins.
+    const dateIdx = tx.objectStore('events').index('byDate');
+    let cursor = await dateIdx.openCursor(IDBKeyRange.lowerBound(today));
+    if (cursor) {
+      nextEvent = normalizeEvent(cursor.value);
+    }
+
+    if (!nextEvent) {
+      await tx.done;
+      return undefined;
+    }
+
+    const client = await tx.objectStore('clients').get(nextEvent.clientId);
+    await tx.done;
+
+    return {
+      event: nextEvent,
+      coupleNames: client?.coupleNames ?? '',
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 // ===========================================================================

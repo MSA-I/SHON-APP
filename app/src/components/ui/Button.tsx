@@ -87,13 +87,25 @@ export function Button({
   }
 
   // primary
+  // hover-glow-hairline (plan §A.3): on hover, paint an OUTSIDE 1px gold
+  // ring via box-shadow with ZERO blur and ZERO spread. User-confirmed this
+  // is a hairline (not a shadow): SOP 09 §4 forbids depth-cue shadows, but
+  // a zero-blur zero-spread box-shadow is geometrically equivalent to an
+  // outline drawn just outside the border-box — without disturbing layout.
+  // Reduced-motion → no scale, ring still appears (it's not motion).
   return (
     <motion.button
       type={type}
       onClick={onClick}
       disabled={disabled}
       data-testid={testId}
-      whileHover={disabled || reduce ? undefined : { scale: 1.02 }}
+      whileHover={
+        disabled
+          ? undefined
+          : reduce
+            ? { boxShadow: '0 0 0 1px var(--gold)' }
+            : { scale: 1.02, boxShadow: '0 0 0 1px var(--gold)' }
+      }
       whileTap={disabled || reduce ? undefined : { scale: 0.98 }}
       transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
       className={[

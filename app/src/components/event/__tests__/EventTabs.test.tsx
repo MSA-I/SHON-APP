@@ -103,6 +103,36 @@ function clickButton(testId: string) {
   });
 }
 
+/**
+ * Phase WOW: EventTabs now wraps its active panel in <AnimatePresence
+ * mode="wait">, which defers the new panel's mount by one animation frame
+ * (Framer schedules the enter via requestAnimationFrame). Tests that click
+ * a tab and immediately query the panel race that frame and intermittently
+ * see the OLD panel — or, after `mode="wait"` exits the previous one,
+ * NOTHING. This helper polls until the requested test-id appears (≤ 100ms).
+ */
+async function waitForSelector(selector: string, timeoutMs = 200): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (container.querySelector(selector)) return;
+    // Yield to the event loop so Framer's RAF / microtasks run.
+    await act(async () => {
+      await new Promise<void>((r) => setTimeout(r, 8));
+    });
+  }
+  throw new Error(`waitForSelector timeout: ${selector}`);
+}
+
+/**
+ * Click a tab button, then wait for the active panel's testid to appear.
+ * Encapsulates the "click + wait for AnimatePresence" pattern so the call
+ * sites stay readable.
+ */
+async function clickTab(tabKey: string) {
+  await clickButton(`event-tab-${tabKey}`);
+  await waitForSelector(`[data-testid="event-panel-${tabKey}"]`);
+}
+
 // ---------------------------------------------------------------------------
 // Test scaffolding — bootstraps EventContext with a real client + event so
 // EventTabs has something to render. We use a tiny "Boot" child that calls
@@ -237,7 +267,7 @@ describe('EventTabs — navigation', () => {
     ];
 
     for (const { key, selector } of tabKeys) {
-      await clickButton(`event-tab-${key}`);
+      await clickTab(key);
       expect($(`[data-testid="event-tab-${key}"]`).getAttribute('aria-selected')).toBe(
         'true',
       );
@@ -251,7 +281,7 @@ describe('EventTabs — navigation', () => {
 
     expect(container.querySelector('[data-testid="save-and-continue-button"]')).not.toBeNull();
 
-    await clickButton('event-tab-summary');
+    await clickTab('summary');
     expect(container.querySelector('[data-testid="save-and-continue-button"]')).toBeNull();
   });
 
@@ -260,6 +290,8 @@ describe('EventTabs — navigation', () => {
     await renderWithEvent(clientId);
 
     await clickButton('save-and-continue-button');
+    // Wait for AnimatePresence to mount the napkins panel.
+    await waitForSelector('[data-testid="event-panel-napkins"]');
     expect($('[data-testid="event-tab-napkins"]').getAttribute('aria-selected')).toBe(
       'true',
     );
@@ -280,7 +312,7 @@ describe('EventTabs — INV-01 table-design selection cap (≤ 5)', () => {
     const { clientId } = await seedClientWithEvent();
     await renderWithEvent(clientId);
 
-    await clickButton('event-tab-tableDesigns');
+    await clickTab('tableDesigns');
 
     const counter = $('[data-testid="selection-counter"]');
     expect(counter.textContent).toContain('0/5');
@@ -298,7 +330,7 @@ describe('EventTabs — INV-01 table-design selection cap (≤ 5)', () => {
     const { clientId } = await seedClientWithEvent(seeded);
     await renderWithEvent(clientId);
 
-    await clickButton('event-tab-tableDesigns');
+    await clickTab('tableDesigns');
 
     expect($('[data-testid="selection-counter"]').textContent).toContain('3/5');
     const openBtn = $(
@@ -321,7 +353,7 @@ describe('EventTabs — INV-01 table-design selection cap (≤ 5)', () => {
     const { clientId } = await seedClientWithEvent(seeded);
     await renderWithEvent(clientId);
 
-    await clickButton('event-tab-tableDesigns');
+    await clickTab('tableDesigns');
 
     expect($('[data-testid="selection-counter"]').textContent).toContain('5/5');
     const openBtn = $(
@@ -344,7 +376,7 @@ describe('EventTabs — INV-01 table-design selection cap (≤ 5)', () => {
     const { clientId } = await seedClientWithEvent(seeded);
     await renderWithEvent(clientId);
 
-    await clickButton('event-tab-tableDesigns');
+    await clickTab('tableDesigns');
     await clickButton(`tableDesign-remove-${seeded[0].imagePath}`);
 
     expect($('[data-testid="selection-counter"]').textContent).toContain('4/5');

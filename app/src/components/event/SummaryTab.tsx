@@ -10,7 +10,8 @@
 // `events/<event-id>/plan.docx`. Backup roundtrip is fired off in parallel.
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { FileDown } from 'lucide-react';
+import { FileDown, Mail, MessageCircle } from 'lucide-react';
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '../ui/Button';
 import { useEvent } from '../../contexts/EventContext';
@@ -26,6 +27,7 @@ import { ChipLabel, SectionHeader } from './EventDetailsTab';
 import { SignaturePad } from '../signature/SignaturePad';
 import { TagsDisplay } from './TagsDisplay';
 import { SelectionThumbnail } from './SelectionThumbnail';
+import { Stagger } from '../../lib/motion/Stagger';
 
 type ExportState =
   | { kind: 'idle' }
@@ -154,13 +156,18 @@ export function SummaryTab(): ReactNode {
     <div data-testid="event-panel-summary-form" className="flex flex-col gap-12">
       <SectionHeader title="סיכום" />
 
+      {/* Stagger the summary blocks (with their dividers in-between) so the
+          sign-off page reveals as a ceremony rather than a wall of text.
+          Step 0.1 = 100ms; 12 children → 1.2s budget. Reduced-motion → all
+          appear together (Stagger handles this internally). */}
+      <Stagger step={0.1} className="flex flex-col gap-12">
       {/* ── Client block ──────────────────────────────────────────────── */}
       <SummaryBlock label="לקוח">
         <KeyValue k="שמות בני הזוג" v={client?.coupleNames ?? '—'} />
         <KeyValue k="נייד" v={client?.phone ?? '—'} ltr />
       </SummaryBlock>
 
-      <Divider />
+      <HairlineDivider />
 
       {/* ── Event details ─────────────────────────────────────────────── */}
       <SummaryBlock label="פרטי אירוע">
@@ -173,7 +180,7 @@ export function SummaryTab(): ReactNode {
         {ev.notes.trim() && <KeyValue k="הערות" v={ev.notes} />}
       </SummaryBlock>
 
-      <Divider />
+      <HairlineDivider />
 
       {/* ── Napkins + reception ───────────────────────────────────────── */}
       <SummaryBlock label="מפיות וקבלת פנים">
@@ -183,14 +190,14 @@ export function SummaryTab(): ReactNode {
         <KeyValue k="קבלת פנים ריזורט" v={ev.reception.atResort ? 'כן' : 'לא'} />
       </SummaryBlock>
 
-      <Divider />
+      <HairlineDivider />
 
       {/* ── Table designs ─────────────────────────────────────────────── */}
       <SummaryBlock label={`עיצובי שולחן (${ev.tableDesignSelections.length})`}>
         <SelectionsGrid items={ev.tableDesignSelections} />
       </SummaryBlock>
 
-      <Divider />
+      <HairlineDivider />
 
       {/* ── Chuppah ───────────────────────────────────────────────────── */}
       <SummaryBlock label="חופה">
@@ -205,7 +212,7 @@ export function SummaryTab(): ReactNode {
         <SelectionsGrid items={ev.chuppah.designSelections} />
       </SummaryBlock>
 
-      <Divider />
+      <HairlineDivider />
 
       {/* ── Upgrades ──────────────────────────────────────────────────── */}
       <SummaryBlock label="שדרוגים">
@@ -226,7 +233,7 @@ export function SummaryTab(): ReactNode {
         )}
       </SummaryBlock>
 
-      <Divider />
+      <HairlineDivider />
 
       {/* ── Tags slot — union of every tab's selections (Maintenance Log 2026-05-21).
             Always rendered (even when empty) so the summary view stays in
@@ -240,7 +247,9 @@ export function SummaryTab(): ReactNode {
         ]}
         testIdSuffix="summary"
       />
+      </Stagger>
 
+      {/* ❖ marks the single ceremonial boundary into the sign-off moment. */}
       <Divider />
 
       {/* ── Signature pad ─────────────────────────────────────────────── */}
@@ -269,18 +278,53 @@ export function SummaryTab(): ReactNode {
           </p>
         )}
         {state.kind === 'done' && (
-          <p
-            className="text-small text-gold-dark"
-            dir="ltr"
-            data-testid="export-docx-success"
-          >
-            ✓ {state.path}
-          </p>
+          <>
+            <p
+              className="text-small text-gold-dark"
+              dir="ltr"
+              data-testid="export-docx-success"
+            >
+              ✓ {state.path}
+            </p>
+            {/* Share row — appears only after a successful export. mailto:
+                opens the OS default mail client; wa.me opens WhatsApp Web /
+                Desktop. Both are best-effort: WhatsApp Web URL API has no
+                attachment slot, so we also reveal the file in Explorer so
+                Shon can drag it into the WhatsApp window. The opener plugin
+                scope (capabilities/default.json) restricts URLs to the
+                two schemes + the events/** path. */}
+            <div
+              className="flex flex-row-reverse gap-3 mt-2"
+              data-testid="export-share-row"
+            >
+              <Button
+                variant="primary"
+                onClick={() => onShareEmail(state.path)}
+                testId="share-email-button"
+                icon={<Mail size={16} aria-hidden="true" />}
+              >
+                שלח באימייל
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => onShareWhatsApp(state.path)}
+                testId="share-whatsapp-button"
+                icon={<MessageCircle size={16} aria-hidden="true" />}
+              >
+                שלח בוואטסאפ
+              </Button>
+            </div>
+          </>
         )}
         {state.kind === 'error' && (
+          // Designer-Reviewer P0 + A11y-Gate fix: gold (success/peak
+          // accent) is the wrong semantic for an error message. The
+          // theme-aware --danger token darkens on light canvas so the
+          // 4.5:1 WCAG AA body-text ratio holds in both themes.
           <p
             role="alert"
-            className="text-small text-gold"
+            className="text-small"
+            style={{ color: 'var(--danger)' }}
             data-testid="export-docx-error"
           >
             {state.message}
@@ -289,6 +333,68 @@ export function SummaryTab(): ReactNode {
       </div>
     </div>
   );
+
+  // ── Share handlers ────────────────────────────────────────────────────
+  // Both run after a successful export, so `ev` and `client` are guaranteed
+  // populated (the buttons sit inside the `state.kind === 'done'` branch).
+
+  async function onShareEmail(docPath: string) {
+    if (!ev || !client) return;
+    const subject = `סיכום אירוע — ${client.coupleNames} ${ev.date}`;
+    const body = [
+      `שלום ${client.coupleNames},`,
+      '',
+      'מצורף סיכום פרטי האירוע שלכם.',
+      `מיקום הקובץ במחשב: ${docPath}`,
+      '',
+      'אשמח לאשר קבלה.',
+      '',
+      'בברכה,',
+      'שון בלאיש — הפקות',
+    ].join('\n');
+    const to = client.email ?? '';
+    const url = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    try {
+      await openUrl(url);
+      // Reveal the DOCX in Explorer so the user can drag it into the
+      // mail client (mailto: has no attachment slot).
+      void revealItemInDir(docPath).catch(() => {
+        /* non-fatal — Explorer reveal is a convenience, not a contract */
+      });
+    } catch (err) {
+      toast({ kind: 'error', message: errMessage(err, 'פתיחת לקוח האימייל נכשלה') });
+    }
+  }
+
+  async function onShareWhatsApp(docPath: string) {
+    if (!ev || !client) return;
+    const phone = normalizeIsraeliPhone(client.phone);
+    const text = [
+      `שלום ${client.coupleNames},`,
+      'מצורף סיכום פרטי האירוע שלכם.',
+      'בברכה, שון בלאיש — הפקות',
+    ].join('\n');
+    // wa.me requires an internationalised number (no '+', no dashes); when
+    // the client phone is malformed we fall back to the chooser endpoint
+    // (no `phone=` segment) so the user can pick a chat manually.
+    const url = phone
+      ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}`
+      : `https://wa.me/?text=${encodeURIComponent(text)}`;
+    try {
+      await openUrl(url);
+      // WhatsApp Web/Desktop has no URL-level attachment API. Reveal the
+      // file in Explorer so Shon can drag it into the chat window.
+      void revealItemInDir(docPath).catch(() => {
+        /* non-fatal */
+      });
+      toast({
+        kind: 'success',
+        message: 'גרור את הקובץ מ-Explorer לחלון WhatsApp',
+      });
+    } catch (err) {
+      toast({ kind: 'error', message: errMessage(err, 'פתיחת WhatsApp נכשלה') });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -376,10 +482,25 @@ function SelectionsGrid({ items }: { items: ImageSelection[] }) {
   );
 }
 
+/**
+ * Designer-Reviewer P0 (SummaryTab #3): the SummaryTab originally rendered
+ * `❖` between every block (7 instances), which diluted the gold "peak" so it
+ * read as texture instead of accent. We now keep a single ceremonial ❖ only
+ * at the top of the summary (`Divider`) and use a quiet hairline rule between
+ * blocks (`HairlineDivider`). Gold appears once per page — the way it should.
+ */
 function Divider() {
   return (
     <div className="flex items-center justify-center" aria-hidden="true">
       <span className="font-serif text-h2 text-gold">❖</span>
+    </div>
+  );
+}
+
+function HairlineDivider() {
+  return (
+    <div className="flex items-center justify-center" aria-hidden="true">
+      <span className="block w-12 h-px bg-border-subtle" />
     </div>
   );
 }
@@ -415,4 +536,26 @@ function errMessage(err: unknown, fallback: string): string {
     if (typeof m === 'string' && m.length > 0) return m;
   }
   return fallback;
+}
+
+/**
+ * Normalise an Israeli phone number for the wa.me URL.
+ *   "050-1234567"   -> "972501234567"
+ *   "+972501234567" -> "972501234567"
+ *   "0501234567"    -> "972501234567"
+ *   ""              -> ""  (caller falls back to the chooser endpoint)
+ *
+ * wa.me requires the international number with no leading '+', dashes,
+ * spaces, or parens. Israeli locals beginning with '0' have the '0'
+ * stripped and replaced with the country code '972'. Anything we can't
+ * confidently normalise is rejected by returning ''.
+ */
+function normalizeIsraeliPhone(raw: string): string {
+  const digits = raw.replace(/[^0-9]/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('972')) return digits;
+  if (digits.startsWith('0')) return `972${digits.slice(1)}`;
+  // Anything else (already-international foreign number, malformed, etc.)
+  // is returned as-is — wa.me will reject and fall through to the chooser.
+  return digits;
 }

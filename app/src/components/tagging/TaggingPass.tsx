@@ -616,12 +616,15 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
   }
 
   // The image renders motion-free under reduced motion (per brief).
+  // Phase WOW: cross-slide (opacity + 12px x-shift) on the signature ease
+  // — keyed on path via the parent <motion.img key=...>, so React unmounts
+  // the previous tile and lets Framer animate the new one in.
   const imageMotionProps = prefersReducedMotion
     ? {}
     : {
-        initial: { opacity: 0 },
-        animate: { opacity: 1 },
-        transition: { duration: 0.2, ease: [0.4, 0, 0.2, 1] as const },
+        initial: { opacity: 0, x: 12 },
+        animate: { opacity: 1, x: 0 },
+        transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] as const },
       };
 
   // Stitch-mockup max image frame: 800×600 contain.
@@ -679,8 +682,13 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
             aria-valuemax={total}
             aria-label="התקדמות תיוג"
           >
+            {/* progress-shimmer: flat opacity pulse on the gold fill (CSS
+                keyframe in styles/index.css). NOT a gradient — Constitution
+                §SOP-09 §4 forbids gradients as decoration. Reduced-motion
+                handled by the keyframe's @media guard, so the fill stays
+                solid for users who prefer no motion. */}
             <div
-              className="absolute top-0 h-px bg-gold"
+              className="absolute top-0 h-px progress-shimmer-fill"
               style={{
                 insetInlineStart: 0,
                 width: `${progressPct}%`,

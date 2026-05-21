@@ -1,9 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for the main window. Filesystem and dialog scopes are added in capabilities/main.json by Task #8.",
+  "description": "Default permissions for the main window. Filesystem and dialog scopes are added in capabilities/main.json by Task #8. Opener scope (mailto + wa.me + reveal) added 2026-05-21 for the SummaryTab share buttons.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "mailto:*" },
+        { "url": "https://wa.me/*" },
+        { "url": "https://api.whatsapp.com/*" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/events/**" }
+      ]
+    }
   ]
 }

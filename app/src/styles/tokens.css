@@ -81,6 +81,16 @@
      value other than `none` violates SOP 09. Components MUST use this
      instead of inlining `box-shadow: none` to keep the rule discoverable. */
   --shadow-flat: none;
+
+  /* ─── Functional danger color (Phase WOW a11y patch, 2026-05-21) ────
+     Used for destructive-action buttons (Settings reset) + error states
+     (export failure). Theme-aware so contrast holds in both palettes:
+     - Dark canvas (#0F0E0C): #C46B6B → ~7.7:1 vs cream surroundings.
+     - Light canvas (#F5F0E8): #B23A3A → ~5.4:1 (WCAG AA body-text 4.5:1
+       passes — was failing at 3.0:1 with the dark-mode shade reused).
+     A11y-Gate flagged the under-spec contrast on light theme; this token
+     is the single source of truth so future destructive UI can't drift. */
+  --danger: #C46B6B;
 }
 
 /*
@@ -111,4 +121,7 @@
   --surface-low:    #FFFFFF;
   --surface:        #FFFFFF;
   --surface-bright: #F5F0E8;
+
+  /* Danger token darkened so 4.5:1 on cream canvas (#F5F0E8) is met. */
+  --danger: #B23A3A;
 }

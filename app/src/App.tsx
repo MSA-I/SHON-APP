@@ -21,6 +21,7 @@ import { ErrorBoundary } from './components/shell/ErrorBoundary';
 import { FatalBanner } from './components/shell/FatalBanner';
 import { BootSplash } from './components/shell/BootSplash';
 import { AppBar } from './components/shell/AppBar';
+import { WelcomeScreen } from './components/shell/WelcomeScreen';
 import { ClientList } from './components/client';
 import { TaggingPass } from './components/tagging/TaggingPass';
 import { EventTabs } from './components/event';
@@ -31,10 +32,20 @@ import * as db from './lib/db';
 type AppView =
   | { kind: 'boot' }
   | { kind: 'tagging' }
+  | { kind: 'welcome' }
   | { kind: 'home' }
   | { kind: 'client-detail'; clientId: string }
   | { kind: 'event-tabs'; clientId: string }
   | { kind: 'settings' };
+
+/** Returns today's local date as ISO yyyy-mm-dd. */
+function todayLocalIso(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
 
 export default function App() {
   return (
@@ -62,14 +73,26 @@ function AppShell() {
   const [view, setView] = useState<AppView>({ kind: 'boot' });
   const [bootError, setBootError] = useState<string | null>(null);
 
-  // Boot sequence — read meta.taggingComplete then route.
+  // Boot sequence — read meta.taggingComplete + meta.lastWelcomeDate then route.
+  // Tagging gate (BehavioralRule #11) wins; if cleared we check whether today's
+  // welcome screen has been shown yet (Phase WOW). Same-day → straight to Home.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const complete = await db.getMeta('taggingComplete');
         if (cancelled) return;
-        setView(complete === true ? { kind: 'home' } : { kind: 'tagging' });
+        if (complete !== true) {
+          setView({ kind: 'tagging' });
+          return;
+        }
+        const lastWelcome = await db.getMeta('lastWelcomeDate');
+        if (cancelled) return;
+        if (lastWelcome === todayLocalIso()) {
+          setView({ kind: 'home' });
+        } else {
+          setView({ kind: 'welcome' });
+        }
       } catch (err) {
         console.error('[boot] meta read failed', err);
         if (!cancelled) {
@@ -97,7 +120,36 @@ function AppShell() {
   }
 
   if (view.kind === 'tagging') {
-    return <TaggingPass onComplete={() => setView({ kind: 'home' })} />;
+    return (
+      <TaggingPass
+        onComplete={async () => {
+          // Bridge tagging → welcome on the same first-launch flow.
+          const lastWelcome = await db.getMeta('lastWelcomeDate');
+          setView(
+            lastWelcome === todayLocalIso()
+              ? { kind: 'home' }
+              : { kind: 'welcome' },
+          );
+        }}
+      />
+    );
+  }
+
+  if (view.kind === 'welcome') {
+    return (
+      <WelcomeScreen
+        onStart={async () => {
+          // Single-writer of `lastWelcomeDate`. Best-effort: if the write
+          // fails the user still proceeds; tomorrow's check naturally retries.
+          try {
+            await db.setMeta('lastWelcomeDate', todayLocalIso());
+          } catch (err) {
+            console.error('[welcome] setMeta failed', err);
+          }
+          setView({ kind: 'home' });
+        }}
+      />
+    );
   }
 
   // From here on AppBar is rendered.

@@ -14,7 +14,7 @@
 
 import { useState, type ReactNode } from 'react';
 import { ArrowLeft, FileText } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 
 import { Button } from '../ui/Button';
 import { useEvent } from '../../contexts/EventContext';
@@ -58,6 +58,7 @@ const TABS: readonly TabDef[] = [
 export function EventTabs(): ReactNode {
   const eventCtx = useEvent();
   const [active, setActive] = useState<TabKey>('details');
+  const reduce = useReducedMotion();
 
   // Empty-state: per task spec, show "טען אירוע" if no event is loaded.
   if (!eventCtx.currentEvent) {
@@ -99,18 +100,36 @@ export function EventTabs(): ReactNode {
       </nav>
 
       {/* ── Active panel ───────────────────────────────────────────────── */}
-      <div
-        role="tabpanel"
-        data-testid={`event-panel-${active}`}
-        className="px-16 py-24 max-w-5xl mx-auto"
-      >
-        {active === 'details' && <EventDetailsTab />}
-        {active === 'napkins' && <NapkinsTab />}
-        {active === 'tableDesigns' && <TableDesignsTab />}
-        {active === 'chuppah' && <ChuppahTab />}
-        {active === 'upgrades' && <UpgradesTab />}
-        {active === 'summary' && <SummaryTab />}
-      </div>
+      {/* AnimatePresence keyed on `active` cross-fades panels. Default mode
+          (sync) lets the new panel mount immediately while the old one
+          fades out — visually fine because both opacity tracks complement,
+          and it keeps the new panel queryable from tests synchronously
+          (jsdom has no rAF runtime, so `mode="wait"` would deadlock waiting
+          for an exit animation that never completes). The layoutId underline
+          (200ms) locks BEFORE the panel (240ms) resolves, so the two effects
+          still compose cleanly. */}
+      <AnimatePresence initial={false}>
+        <motion.div
+          key={active}
+          role="tabpanel"
+          data-testid={`event-panel-${active}`}
+          className="px-16 py-24 max-w-5xl mx-auto"
+          initial={reduce ? false : { opacity: 0, x: 8 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={reduce ? undefined : { opacity: 0, x: -8 }}
+          transition={{
+            duration: reduce ? 0 : 0.24,
+            ease: [0.22, 1, 0.36, 1],
+          }}
+        >
+          {active === 'details' && <EventDetailsTab />}
+          {active === 'napkins' && <NapkinsTab />}
+          {active === 'tableDesigns' && <TableDesignsTab />}
+          {active === 'chuppah' && <ChuppahTab />}
+          {active === 'upgrades' && <UpgradesTab />}
+          {active === 'summary' && <SummaryTab />}
+        </motion.div>
+      </AnimatePresence>
 
       {/* ── Bottom action row ──────────────────────────────────────────── */}
       <div className="border-t border-border-subtle px-16 py-6 flex justify-end gap-6">

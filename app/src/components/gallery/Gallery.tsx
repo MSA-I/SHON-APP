@@ -455,12 +455,26 @@ function SubTab({
 type TileProps = {
   image: ImageMetadata;
   index: number;
+  /**
+   * True only for tiles in the first painted viewport (≈ rows 0..3 from
+   * the virtualizer). Beyond that, the entrance animation is suppressed
+   * entirely so virtualizer-recycled tiles render instant on scroll —
+   * Designer-Reviewer P0 (Gallery #1) fix for scroll-back jitter.
+   */
+  enableEntrance: boolean;
   selected: boolean;
   onToggle: () => void;
   onOpen: () => void;
 };
 
-function Tile({ image, index, selected, onToggle, onOpen }: TileProps) {
+function Tile({
+  image,
+  index,
+  enableEntrance,
+  selected,
+  onToggle,
+  onOpen,
+}: TileProps) {
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [errored, setErrored] = useState(false);
 
@@ -510,8 +524,15 @@ function Tile({ image, index, selected, onToggle, onOpen }: TileProps) {
     onToggle();
   };
 
+  // Phase WOW: stagger only the FIRST viewport's tiles on initial paint —
+  // beyond that (or on scroll-back), virtualizer-recycled tiles render
+  // instant so scrolling stays at 60fps. The decision is owned by the
+  // caller via `enableEntrance` (gated on `vRow.index < 4`); when false,
+  // the tile renders with no animation at all.
+  const stagger = enableEntrance ? (index % 16) * 0.04 : 0;
+
   return (
-    <div
+    <motion.div
       data-testid={`gallery-card-${index}`}
       role="button"
       tabIndex={0}
@@ -524,6 +545,13 @@ function Tile({ image, index, selected, onToggle, onOpen }: TileProps) {
           onToggle();
         }
       }}
+      initial={enableEntrance ? { opacity: 0, y: 8 } : false}
+      animate={enableEntrance ? { opacity: 1, y: 0 } : false}
+      transition={
+        enableEntrance
+          ? { duration: 0.42, ease: [0.22, 1, 0.36, 1], delay: stagger }
+          : { duration: 0 }
+      }
       className={[
         'group relative aspect-square cursor-pointer transition-colors duration-150',
         selected
@@ -598,7 +626,7 @@ function Tile({ image, index, selected, onToggle, onOpen }: TileProps) {
       >
         <span className="font-sans text-tiny" aria-hidden="true">↗</span>
       </button>
-    </div>
+    </motion.div>
   );
 }
 
@@ -718,6 +746,11 @@ function VirtualGrid({
           {virtualizer.getVirtualItems().map((vRow) => {
             const start = vRow.index * COLUMNS;
             const rowImages = visibleImages.slice(start, start + COLUMNS);
+            // Designer-Reviewer P0 fix: gate the entrance animation on
+            // ROW index (not item index) so virtualizer-recycled tiles
+            // don't re-stagger when the user scrolls back to the top.
+            // Rows 0..3 = first viewport ≈ 16 tiles total.
+            const enableEntrance = vRow.index < 4;
             return (
               <div
                 key={vRow.key}
@@ -736,6 +769,7 @@ function VirtualGrid({
                     key={img.path}
                     image={img}
                     index={start + colIdx}
+                    enableEntrance={enableEntrance}
                     selected={isSelected(img.path)}
                     onToggle={() => onToggle(img)}
                     onOpen={() => onOpen(img)}

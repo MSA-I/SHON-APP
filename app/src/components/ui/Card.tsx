@@ -20,7 +20,10 @@
  *    Event tabs and the Settings panel.
  *
  * Behavior:
- *  - hover (opt-in): 200ms transition; on hover border becomes gold + scale(1.02).
+ *  - hover (opt-in): 200ms transition. Plan dreamy-mixing-pine §A.3 calls for
+ *    the "hover-lift" pattern — border-color shift to gold + a 2px y-translate.
+ *    No shadow (SOP 09 §4). The pre-existing scale(1.02) is preserved on top
+ *    so the lift feels tactile rather than purely lateral.
  *  - onClick (opt-in): cursor: pointer, role="button", focus-visible ring,
  *    keyboard activation (Enter / Space).
  *
@@ -69,8 +72,8 @@ export function Card({
       tabIndex={isInteractive ? 0 : undefined}
       onClick={onClick}
       onKeyDown={isInteractive ? handleKey : undefined}
-      whileHover={hover && !reduce ? { scale: 1.02 } : undefined}
-      transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+      whileHover={hover && !reduce ? { scale: 1.02, y: -2 } : undefined}
+      transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
       className={[
         raised ? 'bg-surface-low' : 'bg-transparent',
         'border border-solid border-border-subtle',

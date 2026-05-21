@@ -22,12 +22,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, Copy, Download, Moon, Sun, TriangleAlert, Upload } from 'lucide-react';
+import { motion } from 'framer-motion';
 
 import { useTheme } from '../../contexts/ThemeContext';
 import { useToast } from '../../contexts/ToastContext';
 import * as backup from '../../lib/backup';
 import * as db from '../../lib/db';
 import { getBackupsDir } from '../../lib/paths';
+import { Stagger } from '../../lib/motion/Stagger';
+import { useEntrance } from '../../lib/motion/useEntrance';
 
 // =============================================================================
 // Component
@@ -36,6 +39,7 @@ import { getBackupsDir } from '../../lib/paths';
 export function Settings() {
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
+  const headerEntrance = useEntrance();
 
   const [backupsDir, setBackupsDir] = useState<string>('');
   const [pathCopied, setPathCopied] = useState(false);
@@ -199,7 +203,7 @@ export function Settings() {
     >
       <div className="mx-auto max-w-3xl px-16 py-24">
         {/* ── Page title ───────────────────────────────────────────────── */}
-        <header>
+        <motion.header {...headerEntrance}>
           <p
             className="text-label uppercase text-gold-dark"
             style={{ letterSpacing: '0.12em' }}
@@ -207,10 +211,14 @@ export function Settings() {
             ❖ ניהול האפליקציה
           </p>
           <h1 className="font-serif text-hero mt-6">הגדרות</h1>
-        </header>
+        </motion.header>
 
         <Divider />
 
+        {/* Stagger the three sections after the title divider so the page
+            reveals top-down rather than as a single block. Step 0.1 keeps
+            the cascade snappy (≈ 300ms total). */}
+        <Stagger step={0.1} delay={0.18}>
         {/* ── 1. גיבוי ─────────────────────────────────────────────────── */}
         <Section title="גיבוי" eyebrow="ייצוא, שחזור ואיפוס">
           <p className="text-body text-cream-muted leading-relaxed">
@@ -337,6 +345,7 @@ export function Settings() {
             Shon Blaish — Event Designer v1.0
           </p>
         </Section>
+        </Stagger>
       </div>
     </main>
   );
@@ -442,7 +451,7 @@ function DangerButton({
         transition-colors duration-150 ease-[cubic-bezier(0.4,0,0.2,1)]
         disabled:opacity-50 disabled:cursor-not-allowed
       "
-      style={{ color: '#C46B6B' }}
+      style={{ color: 'var(--danger)' }}
     >
       {icon && <span className="flex items-center">{icon}</span>}
       <span>{children}</span>
@@ -456,7 +465,7 @@ function DangerButton({
           group-hover:scale-x-100
           group-disabled:scale-x-0
         "
-        style={{ background: '#C46B6B' }}
+        style={{ background: 'var(--danger)' }}
       />
     </button>
   );

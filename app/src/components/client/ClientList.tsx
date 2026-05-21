@@ -9,11 +9,14 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import * as db from '../../lib/db';
 import type { Client, Event } from '../../types';
 import { Button, Ornament } from '../ui';
 import { ClientCard } from './ClientCard';
 import { ClientForm } from './ClientForm';
+import { useEntrance } from '../../lib/motion/useEntrance';
+import { Stagger } from '../../lib/motion/Stagger';
 
 export interface ClientListProps {
   onClientSelect: (clientId: string) => void;
@@ -26,6 +29,7 @@ export function ClientList({ onClientSelect }: ClientListProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const heroEntrance = useEntrance();
 
   const load = useCallback(async () => {
     try {
@@ -71,12 +75,12 @@ export function ClientList({ onClientSelect }: ClientListProps) {
 
   return (
     <div data-testid="client-list" className="px-16 py-12">
-      <div className="flex flex-col items-end gap-2">
+      <motion.div {...heroEntrance} className="flex flex-col items-end gap-2">
         <h1 className="font-serif text-hero text-cream">לקוחות פרימיום</h1>
         <p className="font-sans text-body text-cream-muted">
           רשימת לקוחות ואירועים קרובים.
         </p>
-      </div>
+      </motion.div>
 
       <Ornament size="large" variant="divider" />
 
@@ -116,7 +120,9 @@ export function ClientList({ onClientSelect }: ClientListProps) {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-6">
+          {/* Cap stagger at 12 — 12 × 80ms = 960ms total even if Shon has 60+
+              clients, so the cascade never feels laggy. */}
+          <Stagger cap={12} step={0.08} delay={0.18} className="grid grid-cols-2 gap-6">
             {clients.map(({ client, nextEvent }) => (
               <ClientCard
                 key={client.id}
@@ -125,7 +131,7 @@ export function ClientList({ onClientSelect }: ClientListProps) {
                 onClick={() => onClientSelect(client.id)}
               />
             ))}
-          </div>
+          </Stagger>
 
           <div className="flex items-center justify-center mt-12">
             <Button

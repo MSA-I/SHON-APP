@@ -29,6 +29,7 @@ import {
   type CSSProperties,
 } from 'react';
 import SignatureCanvas from 'react-signature-canvas';
+import { motion, useReducedMotion } from 'framer-motion';
 
 import type { Signature, SignatureStroke } from '../../types';
 
@@ -94,6 +95,11 @@ export function SignaturePad({
    */
   const [editing, setEditing] = useState<boolean>(!initialSignature);
   const [hasStroke, setHasStroke] = useState<boolean>(false);
+  // Phase WOW: confirmation-pulse latch — flips true for ~520ms after
+  // handleConfirm fires. Reduced-motion → no scale animation observed,
+  // but the toast (owned by SummaryTab) still surfaces success.
+  const [pulsing, setPulsing] = useState<boolean>(false);
+  const reduce = useReducedMotion();
 
   const todayStamp = useMemo(() => formatHebrewLongDate(Date.now()), []);
 
@@ -170,6 +176,12 @@ export function SignaturePad({
       // strokes. Don't emit a malformed signature.
       return;
     }
+
+    // Trigger the confirmation pulse before bubbling up — the parent will
+    // unmount the editing UI shortly after, but a 520ms one-shot still
+    // completes inside the brief window the button stays mounted.
+    setPulsing(true);
+    window.setTimeout(() => setPulsing(false), 520);
 
     onConfirm({
       kind: 'vector',
@@ -289,11 +301,30 @@ export function SignaturePad({
           </span>
 
           {editing ? (
-            <button
+            <motion.button
               type="button"
               onClick={handleConfirm}
               disabled={!hasStroke}
               data-testid="signature-pad-confirm"
+              // Confirmation-pulse: 520ms one-shot scale 1 → 1.04 → 1 with
+              // a subtle ring expansion via box-shadow (zero-blur, so
+              // SOP 09 §4 compliant — same hairline-ring rule as Button).
+              // Designer-Reviewer P0: button is bg-gold, so a gold ring
+              // disappears against it. Use cream ink for the pulse so the
+              // ceremony is actually visible to the couple.
+              animate={
+                pulsing && !reduce
+                  ? {
+                      scale: [1, 1.04, 1],
+                      boxShadow: [
+                        '0 0 0 0px var(--cream)',
+                        '0 0 0 2px var(--cream)',
+                        '0 0 0 0px var(--cream)',
+                      ],
+                    }
+                  : { scale: 1, boxShadow: '0 0 0 0px var(--cream)' }
+              }
+              transition={{ duration: 0.52, ease: [0.34, 1.32, 0.64, 1] }}
               className="
                 px-6 py-2
                 text-label uppercase
@@ -305,7 +336,7 @@ export function SignaturePad({
               "
             >
               אישור וחתימה
-            </button>
+            </motion.button>
           ) : onCancel ? (
             <button
               type="button"

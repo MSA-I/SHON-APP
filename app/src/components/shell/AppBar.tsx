@@ -20,7 +20,9 @@
  */
 
 import { useState, type CSSProperties } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { AnimatedThemeToggler } from "../ui/animated-theme-toggler";
+import { useEntrance } from "../../lib/motion/useEntrance";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,16 +56,30 @@ const barStyle: CSSProperties = {
 };
 
 export function AppBar({ breadcrumb, showThemeToggle = true, onLogoClick }: AppBarProps) {
+  const reduce = useReducedMotion();
+  // Breadcrumb fades in slightly after the bar's hairline finishes drawing.
+  const breadcrumbEntrance = useEntrance({ delay: 0.18 });
   return (
     <header
       data-testid="app-bar"
       className="
         flex items-center justify-between
         bg-ink-raised text-cream
-        border-b border-border-subtle
+        relative
       "
       style={barStyle}
     >
+      {/* ── Hairline bottom border, scale-X reveal on first mount ─────────
+          Plan §B.8 — replaces the static `border-b` so the bar feels like
+          it's being drawn in. 320ms total, signature ease, RTL-agnostic
+          (scaleX from center reads naturally in either direction). */}
+      <motion.div
+        aria-hidden="true"
+        className="absolute inset-x-0 bottom-0 h-px bg-border-subtle origin-center"
+        initial={reduce ? { scaleX: 1 } : { scaleX: 0 }}
+        animate={{ scaleX: 1 }}
+        transition={{ duration: reduce ? 0 : 0.32, ease: [0.22, 1, 0.36, 1] }}
+      />
       {/* ── Inline-start (visual left): Theme toggle ──────────────────────── */}
       <div className="flex items-center">
         {showThemeToggle && <AnimatedThemeToggler size={20} />}
@@ -71,7 +87,8 @@ export function AppBar({ breadcrumb, showThemeToggle = true, onLogoClick }: AppB
 
       {/* ── Center: Breadcrumb chips ──────────────────────────────────────── */}
       {breadcrumb && breadcrumb.length > 0 && (
-        <nav
+        <motion.nav
+          {...breadcrumbEntrance}
           aria-label="פירורי לחם"
           className="flex items-center gap-3 font-sans text-small text-cream-muted"
         >
@@ -105,7 +122,7 @@ export function AppBar({ breadcrumb, showThemeToggle = true, onLogoClick }: AppB
               </span>
             );
           })}
-        </nav>
+        </motion.nav>
       )}
 
       {/* ── Inline-end (visual right): Brand mark ─────────────────────────
@@ -162,11 +179,11 @@ function BrandLogo({ onClick }: { onClick?: () => void }) {
       className="
         flex items-center justify-center
         bg-transparent border-0 cursor-pointer p-1
-        rounded-md
         transition-transform duration-150
         hover:scale-105 active:scale-95
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold focus-visible:ring-offset-2
       "
+      style={{ borderRadius: 0 }}
     >
       {inner}
     </button>
