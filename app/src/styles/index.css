@@ -1,0 +1,252 @@
+/*
+ * Global stylesheet entry point.
+ *
+ * Order matters: tokens → fonts → Tailwind theme block → reset/base.
+ * Tailwind v4: utilities are generated from the @theme block below.
+ */
+
+@import "./tokens.css";
+@import "./fonts.css";
+@import "tailwindcss";
+
+/* ─── Theme: maps SOP 09 tokens into Tailwind v4 utilities ─────────────── */
+
+@theme {
+  /* Colors — usable as bg-ink, text-cream, border-gold, etc. */
+  --color-ink:           #0F0E0C;
+  --color-ink-raised:   #1A1714;
+  --color-cream:         #F5F0E8;
+  --color-cream-muted:   #A8A39B;
+  --color-gold:          #C9A961;
+  --color-gold-dark:     #A88B47;
+  --color-border-subtle: #2A2520;
+
+  /* Type families — usable as font-serif, font-sans */
+  --font-serif: 'Frank Ruhl Libre', 'David Libre', 'Times New Roman', serif;
+  --font-sans:  'Heebo', 'Assistant', 'Segoe UI', 'Arial', sans-serif;
+  --font-mono:  'JetBrains Mono', 'Consolas', monospace;
+
+  /* Type scale — usable as text-hero, text-h1, ..., text-tiny */
+  --text-hero:   4rem;
+  --text-hero--line-height: 1.15;
+  --text-hero--font-weight: 500;
+
+  --text-h1:     2.5rem;
+  --text-h1--line-height: 1.15;
+  --text-h1--font-weight: 500;
+
+  --text-h2:     1.75rem;
+  --text-h2--line-height: 1.15;
+  --text-h2--font-weight: 500;
+
+  --text-h3:     1.25rem;
+  --text-h3--line-height: 1.15;
+  --text-h3--font-weight: 500;
+
+  --text-body:   1rem;
+  --text-body--line-height: 1.6;
+
+  --text-small:  0.875rem;
+  --text-small--line-height: 1.4;
+
+  --text-label:  0.75rem;
+  --text-label--line-height: 1.4;
+  --text-label--font-weight: 600;
+  --text-label--letter-spacing: 0.12em;
+
+  --text-tiny:   0.6875rem;
+  --text-tiny--line-height: 1.4;
+
+  /* Spacing scale — usable as p-1, p-2, p-3, p-4, p-6, p-8, p-12, p-16, p-24 */
+  --spacing-1:  0.25rem;
+  --spacing-2:  0.5rem;
+  --spacing-3:  0.75rem;
+  --spacing-4:  1rem;
+  --spacing-6:  1.5rem;
+  --spacing-8:  2rem;
+  --spacing-12: 3rem;
+  --spacing-16: 4rem;
+  --spacing-24: 6rem;
+
+  /* Border radius — sharp default, 2px hint for buttons/inputs only */
+  --radius-none: 0;
+  --radius-sm:   2px;
+
+  /* Motion */
+  --animate-duration-instant: 100ms;
+  --animate-duration-quick:   150ms;
+  --animate-duration-glow:    200ms;
+  --animate-duration-modal:   260ms;
+  --animate-duration-page:    320ms;
+}
+
+/* ─── Light-mode Tailwind colors ────────────────────────────────────────
+ *
+ * Tailwind v4 quirk (for reviewer #19v2): `@theme` does NOT support
+ * selector-scoped variants — its custom properties are emitted once at
+ * `:root` and bound to utility classes at build time. The documented
+ * workaround is to override the same `--color-*` variables under a
+ * selector at runtime; Tailwind's generated utilities (`bg-ink`,
+ * `text-cream`, `border-gold`, etc.) read these via `var(...)` at
+ * paint time, so a `[data-theme="light"]` block correctly inverts
+ * every utility without rebuilding.
+ *
+ * Strategy: keep the *semantic names* (`--color-ink`, `--color-cream`,
+ * `--color-gold`, …) so existing utilities like `bg-ink` continue to
+ * work — but in light mode `--color-ink` is the cream canvas and
+ * `--color-cream` is dark text. Components written against the
+ * Tailwind utilities therefore "just flip" with the data-theme switch.
+ *
+ * Hex values mirror tokens.css `[data-theme="light"]`. Single source of
+ * meaning; two surfaces (CSS vars + Tailwind utilities) for now.
+ *
+ * NOTE: staged but not yet wired into App.tsx — pending SOP 13.
+ */
+[data-theme="light"] {
+  --color-ink:           #F5F0E8;   /* canvas in light is cream */
+  --color-ink-raised:    #FFFFFF;   /* raised surface = pure white */
+  --color-cream:         #1A1714;   /* "cream" utility now paints dark text */
+  --color-cream-muted:   #6B6258;   /* muted text — warm dark gray */
+  --color-gold:          #A88B47;   /* gold-dark reads better on cream */
+  --color-gold-dark:     #8C7032;   /* slightly darker gold for eyebrows/hover */
+  --color-border-subtle: #E5DFD3;   /* faint hairline */
+}
+
+/* ─── Base reset & RTL flow ────────────────────────────────────────────── */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    /* dir="rtl" lang="he" lives on the element in index.html */
+    background-color: var(--bg-primary);
+    color-scheme: dark;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Light-mode: flip native control rendering (scrollbars, form widgets). */
+  html[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: 1.6;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Headlines are always serif — Frank Ruhl Libre with weight 500.
+     Components can override with utility classes when needed. */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    line-height: 1.15;
+    color: var(--text-primary);
+  }
+
+  h1 { font-size: var(--text-h1); }
+  h2 { font-size: var(--text-h2); }
+  h3 { font-size: var(--text-h3); }
+
+  /* Links — gold-dark by default, gold on hover. No underline at rest. */
+  a {
+    color: var(--accent-deep);
+    text-decoration: none;
+    transition: color var(--motion-quick) var(--ease);
+  }
+  a:hover { color: var(--accent); }
+
+  /* Buttons inherit the body font; component layer styles them per SOP 09 §9.3. */
+  button {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
+  /* Inputs default to body sans, RTL flow inherited from html.
+     Numeric fields override with dir="ltr" inline (SOP 04 + SOP 09 §9.4). */
+  input, textarea, select {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--border);
+    padding: var(--spacing-3) var(--spacing-4);
+    border-radius: var(--radius-sm);
+    transition: border-color var(--motion-quick) var(--ease);
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  /* Focus-visible ring on every interactive element (SOP 09 §12).
+     2px gold ring with 2px offset — never replace with outline:none. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Selection — cream text on a faint gold tint. */
+  ::selection {
+    background-color: rgba(201, 169, 97, 0.25); /* gold @ 25% */
+    color: var(--text-primary);
+  }
+
+  /* Scrollbars — let them be slim and dark. WebView2 (Edge Chromium) honors these. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--bg-primary);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-subtle);
+    border: 2px solid var(--bg-primary);
+    border-radius: 0;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--gold-dark);
+  }
+
+  /* Reduced motion — components with Framer Motion check
+     useReducedMotion() at runtime; this catches anything CSS-only. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ─── Reusable utilities ───────────────────────────────────────────────── */
+
+@layer utilities {
+  /* Tabular digits — for guest count, dates, table cells (SOP 09 §2). */
+  .font-tabular {
+    font-feature-settings: 'tnum' 1, 'lnum' 1;
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+
+  /* Mirror Lucide directional icons in RTL (SOP 09 §7). */
+  .icon-rtl-mirror { transform: scaleX(-1); }
+}

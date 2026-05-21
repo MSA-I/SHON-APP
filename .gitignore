@@ -1,0 +1,69 @@
+# Image / video reference folders (kept locally, not in repo)
+אולם עיצוב בסיס 2026/
+חופות אולם גדול גאמוס/
+חופות ריזורט/
+חופות שידרוג/
+מפות מפיות/
+עיצובים שידרוג/
+ריזורט בסיס/
+
+# Loose image / media files at repo root
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+*.png
+*.PNG
+*.webp
+*.mp4
+*.mov
+*.MP4
+*.MOV
+
+# Local DB / scratch / backups
+ruvector.db
+.tmp/
+backups/
+.claude/
+
+# Generated event documents — written by the app, not source
+events/
+
+# Stitch mockups archive — kept locally (huge PNGs)
+stitch_shon_blaish_luxury_planner.zip
+stitch_shon_blaish_luxury_planner/
+
+# Junk files from earlier grep / shell artifacts
+app/!r.pass)
+app/${MAX_EVENTS}`
+app/,+
+app/.json`
+app/5
+app/MAX_BACKUP_BYTES)
+app/app.security.assetProtocol`
+app/parseBackup(text)).toThrowError(,
+app/parseBackup(text)).toThrowError(,+
+app/resolve()
+app/undefined)
+Client.id`)
+MAX_TABLE_SELECTIONS)
+app.windows[0].label
+app/}
+app/src/lib/}
+
+# Node / build artifacts
+node_modules/
+dist/
+build/
+.vite/
+*.log
+
+# Tauri build output
+app/src-tauri/target/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

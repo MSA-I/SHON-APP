@@ -1,0 +1,392 @@
+// SOP: claude.md § Verification step 4 (the summary tab is what Shon and the
+//      couple review together before the signature)
+// SOP: architecture/06-signature-flow.md § Capture Pipeline
+// SOP: architecture/03-document-generation.md (buildEventDocx)
+// SOP: architecture/07-backup-strategy.md (auto-snapshot on signature)
+// SOP: architecture/11-domain-invariants.md INV-02 (signature ⇄ status)
+//
+// Read-only summary view + the SignaturePad. After the couple signs, the
+// "ייצוא Word" button builds the DOCX bytes and atomically writes them to
+// `events/<event-id>/plan.docx`. Backup roundtrip is fired off in parallel.
+
+import { useMemo, useState, type ReactNode } from 'react';
+import { FileDown } from 'lucide-react';
+
+import { Button } from '../ui/Button';
+import { useEvent } from '../../contexts/EventContext';
+import { buildEventDocx } from '../../lib/docx';
+import { exportBackup } from '../../lib/backup';
+import { getProjectRoot } from '../../lib/config';
+import { getEventDocxPath } from '../../lib/paths';
+import { tauriFsExtras, tauriFsProvider } from '../../lib/tauri-fs';
+import type { DocxBuildInput, ImageSelection, Signature } from '../../types';
+
+import { ChipLabel, SectionHeader } from './EventDetailsTab';
+import { SignaturePad } from '../signature/SignaturePad';
+
+type ExportState =
+  | { kind: 'idle' }
+  | { kind: 'building' }
+  | { kind: 'done'; path: string }
+  | { kind: 'error'; message: string };
+
+export function SummaryTab(): ReactNode {
+  const ctx = useEvent();
+  const ev = ctx.currentEvent;
+  const client = ctx.currentClient;
+  const [state, setState] = useState<ExportState>({ kind: 'idle' });
+
+  if (!ev) return null;
+
+  const isSigned = ev.signature !== null && ev.status !== 'draft';
+  const canExport = isSigned;
+
+  async function onConfirmSignature(sig: Signature) {
+    if (!ev) return;
+    try {
+      // EventContext owns the signature pipeline:
+      //   • dispatch('sign') sets in-memory signature + status='signed'
+      //   • signEvent(dataUrl) persists via db.updateEvent and fires the SOP 07
+      //     auto-snapshot in the background.
+      await ctx.signEvent(sig.dataUrl);
+    } catch (err) {
+      setState({
+        kind: 'error',
+        message: errMessage(err, 'שגיאה בשמירת חתימה'),
+      });
+    }
+  }
+
+  async function onExport() {
+    if (!ev || !client) return;
+    setState({ kind: 'building' });
+    try {
+      // SOP 03 § Embedded Images + claude.md Behavioral Rule #2: read each
+      // selected image in place from the project root and hand the bytes to
+      // buildEventDocx. docx.ts throws DOCX_IMAGE_EMBED on any missing entry
+      // ("we never silently skip a chosen image"), so failed reads must be
+      // surfaced to the user before docx.ts is called.
+      const allSelections: ImageSelection[] = [
+        ...ev.tableDesignSelections,
+        ...ev.chuppah.designSelections,
+      ];
+      // Dedupe by imagePath — the same image could (in theory) appear in both
+      // lists; reading twice would be wasted I/O.
+      const uniquePaths = Array.from(
+        new Set(allSelections.map((s) => s.imagePath)),
+      );
+
+      const root = await getProjectRoot();
+      const reads = await Promise.allSettled(
+        uniquePaths.map(async (relPath) => {
+          const absPath = joinRootPosix(root, relPath);
+          const bytes = await tauriFsProvider.readFile(absPath);
+          return { relPath, bytes };
+        }),
+      );
+
+      const imageBytes = new Map<string, Uint8Array>();
+      const failed: string[] = [];
+      for (let i = 0; i < reads.length; i += 1) {
+        const r = reads[i];
+        if (r.status === 'fulfilled') {
+          imageBytes.set(r.value.relPath, r.value.bytes);
+        } else {
+          failed.push(uniquePaths[i]);
+        }
+      }
+      if (failed.length > 0) {
+        // SOP 03 forbids silently skipping a chosen image. Block the export
+        // and tell the user which file moved/was deleted so they can fix it.
+        const preview = failed.slice(0, 3).join(', ');
+        const more = failed.length > 3 ? ` (ועוד ${failed.length - 3})` : '';
+        setState({
+          kind: 'error',
+          message: `קריאת תמונות נבחרה נכשלה — ייתכן שהקובץ הועבר או נמחק: ${preview}${more}`,
+        });
+        return;
+      }
+
+      const input: DocxBuildInput = {
+        client,
+        event: ev,
+        selections: {
+          tableDesigns: ev.tableDesignSelections,
+          chuppah: ev.chuppah.designSelections,
+        },
+        signature: ev.signature,
+        imageBytes,
+      };
+
+      const bytes = await buildEventDocx(input);
+      const target = await getEventDocxPath(ev.id);
+      await tauriFsExtras.atomicWriteFile(target, bytes);
+
+      // SOP 07: any auto-snapshot is fired off in the background — failures here
+      // do NOT mask a successful DOCX write.
+      void exportBackup('signed').catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[summary] backup snapshot failed', err);
+      });
+
+      setState({ kind: 'done', path: target });
+    } catch (err) {
+      setState({
+        kind: 'error',
+        message: errMessage(err, 'יצירת המסמך נכשלה'),
+      });
+    }
+  }
+
+  return (
+    <div data-testid="event-panel-summary-form" className="flex flex-col gap-12">
+      <SectionHeader title="סיכום" />
+
+      {/* ── Client block ──────────────────────────────────────────────── */}
+      <SummaryBlock label="לקוח">
+        <KeyValue k="שמות בני הזוג" v={client?.coupleNames ?? '—'} />
+        <KeyValue k="נייד" v={client?.phone ?? '—'} ltr />
+      </SummaryBlock>
+
+      <Divider />
+
+      {/* ── Event details ─────────────────────────────────────────────── */}
+      <SummaryBlock label="פרטי אירוע">
+        <KeyValue k="תאריך" v={ev.date} ltr />
+        <KeyValue k="יום בשבוע" v={ev.dayOfWeek} />
+        <KeyValue k="שעת תחילה" v={ev.startTime} ltr />
+        <KeyValue k="מתחם" v={ev.location} />
+        <KeyValue k="כמות מוזמנים" v={String(ev.guestCount)} ltr />
+        <KeyValue k="אירוע מעורב" v={ev.isMixed ? 'כן' : 'לא'} />
+        {ev.notes.trim() && <KeyValue k="הערות" v={ev.notes} />}
+      </SummaryBlock>
+
+      <Divider />
+
+      {/* ── Napkins + reception ───────────────────────────────────────── */}
+      <SummaryBlock label="מפיות וקבלת פנים">
+        <KeyValue k="צבע" v={ev.napkins.color} />
+        <KeyValue k="בד" v={ev.napkins.fabric} />
+        <KeyValue k="קיפול" v={ev.napkins.foldType || '—'} />
+        <KeyValue k="קבלת פנים ריזורט" v={ev.reception.atResort ? 'כן' : 'לא'} />
+      </SummaryBlock>
+
+      <Divider />
+
+      {/* ── Table designs ─────────────────────────────────────────────── */}
+      <SummaryBlock label={`עיצובי שולחן (${ev.tableDesignSelections.length})`}>
+        <SelectionsGrid items={ev.tableDesignSelections} />
+      </SummaryBlock>
+
+      <Divider />
+
+      {/* ── Chuppah ───────────────────────────────────────────────────── */}
+      <SummaryBlock label="חופה">
+        <KeyValue k="סוג" v={ev.chuppah.type} />
+        <KeyValue k="מיקום" v={ev.chuppah.location} />
+        {ev.chuppah.fabricDetails.trim() && (
+          <KeyValue k="פירוט בדים" v={ev.chuppah.fabricDetails} />
+        )}
+        {ev.chuppah.aisleDetails.trim() && (
+          <KeyValue k="שדרה" v={ev.chuppah.aisleDetails} />
+        )}
+        <SelectionsGrid items={ev.chuppah.designSelections} />
+      </SummaryBlock>
+
+      <Divider />
+
+      {/* ── Upgrades ──────────────────────────────────────────────────── */}
+      <SummaryBlock label="שדרוגים">
+        {ev.upgrades.description.trim() && (
+          <KeyValue k="תיאור" v={ev.upgrades.description} />
+        )}
+        {ev.upgrades.items.length > 0 && (
+          <ul className="flex flex-wrap gap-2 mt-2">
+            {ev.upgrades.items.map((item, idx) => (
+              <li
+                key={`${item}-${idx}`}
+                className="inline-flex items-center border border-border-subtle px-3 py-1 text-small text-cream"
+              >
+                {item}
+              </li>
+            ))}
+          </ul>
+        )}
+      </SummaryBlock>
+
+      <Divider />
+
+      {/* ── Signature pad ─────────────────────────────────────────────── */}
+      <div className="flex flex-col gap-4">
+        <ChipLabel>חתימה</ChipLabel>
+        <SignaturePad
+          initialDataUrl={ev.signature?.dataUrl}
+          onConfirm={(dataUrl, signedAt) =>
+            onConfirmSignature({ dataUrl, signedAt })
+          }
+        />
+      </div>
+
+      {/* ── Export DOCX ───────────────────────────────────────────────── */}
+      <div className="flex flex-col items-end gap-3">
+        <Button
+          variant="primary"
+          onClick={onExport}
+          disabled={!canExport || state.kind === 'building'}
+          testId="export-docx-button"
+          icon={<FileDown size={16} aria-hidden="true" />}
+        >
+          {state.kind === 'building' ? 'מייצא…' : 'ייצוא Word'}
+        </Button>
+        {!canExport && (
+          <p className="text-tiny text-cream-muted">
+            יש להחתים את בני הזוג לפני ייצוא המסמך.
+          </p>
+        )}
+        {state.kind === 'done' && (
+          <p
+            className="text-small text-gold-dark"
+            dir="ltr"
+            data-testid="export-docx-success"
+          >
+            ✓ {state.path}
+          </p>
+        )}
+        {state.kind === 'error' && (
+          <p
+            role="alert"
+            className="text-small text-gold"
+            data-testid="export-docx-error"
+          >
+            {state.message}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Layout helpers (file-private)
+// ---------------------------------------------------------------------------
+
+function SummaryBlock({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <ChipLabel>{label}</ChipLabel>
+      <div className="bg-ink-raised border border-border-subtle p-6 flex flex-col gap-3">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function KeyValue({
+  k,
+  v,
+  ltr = false,
+}: {
+  k: string;
+  v: string;
+  ltr?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline gap-3">
+      <span className="text-tiny text-gold-dark uppercase min-w-[10ch]">
+        {k}
+      </span>
+      <span
+        className="text-body text-cream"
+        dir={ltr ? 'ltr' : undefined}
+        style={ltr ? { fontFeatureSettings: "'tnum' 1, 'lnum' 1" } : undefined}
+      >
+        {v}
+      </span>
+    </div>
+  );
+}
+
+function SelectionsGrid({ items }: { items: ImageSelection[] }) {
+  // Memoise group-by-category for stable render order in the summary.
+  const groups = useMemo(() => groupByCategory(items), [items]);
+
+  if (items.length === 0) {
+    return <p className="text-small text-cream-muted">לא נבחרו תמונות.</p>;
+  }
+  return (
+    <div className="flex flex-col gap-4 mt-2">
+      {groups.map(([cat, list]) => (
+        <div key={cat} className="flex flex-col gap-2">
+          <span className="text-tiny text-gold-dark uppercase">{cat}</span>
+          <ul className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {list.map((sel) => (
+              <li
+                key={sel.imagePath}
+                className="bg-ink border border-border-subtle p-2 flex flex-col gap-1"
+              >
+                <div className="aspect-[4/3] bg-ink-raised flex items-center justify-center">
+                  <span className="text-tiny text-cream-muted">תמונה</span>
+                </div>
+                <span className="text-small text-cream truncate" dir="auto">
+                  {sel.imageName}
+                </span>
+                {sel.notes.trim() && (
+                  <span className="text-tiny text-cream-muted" dir="auto">
+                    {sel.notes}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Divider() {
+  return (
+    <div className="flex items-center justify-center" aria-hidden="true">
+      <span className="font-serif text-h2 text-gold">❖</span>
+    </div>
+  );
+}
+
+function groupByCategory(
+  items: ImageSelection[],
+): Array<[string, ImageSelection[]]> {
+  const acc = new Map<string, ImageSelection[]>();
+  for (const item of items) {
+    const list = acc.get(item.category) ?? [];
+    list.push(item);
+    acc.set(item.category, list);
+  }
+  return Array.from(acc.entries());
+}
+
+/**
+ * Join the project root with an `ImageSelection.imagePath` (relative POSIX).
+ * Mirrors the lib-internal `joinPosix` shape used by `images.ts`/`paths.ts`:
+ * trims a trailing slash from the root and a leading slash from the rel path,
+ * NFC-normalizes Hebrew. The defense-in-depth `assertInsideRoot` guard inside
+ * `tauriFsProvider.readFile` is what actually enforces the boundary.
+ */
+function joinRootPosix(root: string, relPath: string): string {
+  const r = root.replace(/\/+$/, '');
+  const p = relPath.replace(/^\/+/, '').normalize('NFC');
+  return `${r}/${p}`;
+}
+
+function errMessage(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object' && 'message' in err) {
+    const m = (err as { message?: unknown }).message;
+    if (typeof m === 'string' && m.length > 0) return m;
+  }
+  return fallback;
+}

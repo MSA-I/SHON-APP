@@ -1,0 +1,40 @@
+/*
+ * Font face declarations.
+ * Source of truth: architecture/09-design-tokens.md §2.
+ *
+ * Variable fonts — single TTF per family, weight axis 100..900
+ * (Assistant: 200..800). font-display: swap so the dark canvas isn't
+ * blocked by font load.
+ *
+ * Files live in app/public/fonts/ and are served at /fonts/* by Vite/Tauri.
+ */
+
+@font-face {
+  font-family: 'Frank Ruhl Libre';
+  src: url('/fonts/FrankRuhlLibre[wght].ttf') format('truetype-variations'),
+       url('/fonts/FrankRuhlLibre[wght].ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0020-007F, U+00A0-00FF, U+0590-05FF, U+200E-200F, U+2010-2027, U+2756;
+}
+
+@font-face {
+  font-family: 'Heebo';
+  src: url('/fonts/Heebo[wght].ttf') format('truetype-variations'),
+       url('/fonts/Heebo[wght].ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0020-007F, U+00A0-00FF, U+0590-05FF, U+200E-200F, U+2010-2027;
+}
+
+@font-face {
+  font-family: 'Assistant';
+  src: url('/fonts/Assistant[wght].ttf') format('truetype-variations'),
+       url('/fonts/Assistant[wght].ttf') format('truetype');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0020-007F, U+00A0-00FF, U+0590-05FF, U+200E-200F, U+2010-2027;
+}

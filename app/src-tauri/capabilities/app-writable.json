@@ -1,0 +1,29 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "app-writable",
+  "description": "READ-WRITE access strictly limited to events/ and backups/ — the only two folders the app writes. NEVER add image-library paths to this scope; writes there are forbidden by claude.md #2. `fs:allow-rename` is required by the atomic-write pattern (write to .tmp → rename to final), per SOP 08 § Atomic Writes. `fs:allow-remove` is required for backup retention pruning (rolling 30) and is gated at the lib level so events/*.docx cannot be removed. Companion: capabilities/image-library.json. SOP: architecture/08-tauri-filesystem.md § Path Scopes #2. Each folder needs both the bare path (for readDir/mkdir) and the /** glob (for file ops inside).",
+  "windows": ["main"],
+  "permissions": [
+    "fs:allow-read-file",
+    "fs:allow-read-text-file",
+    "fs:allow-read-dir",
+    "fs:allow-stat",
+    "fs:allow-exists",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    "fs:allow-mkdir",
+    "fs:allow-rename",
+    "fs:allow-remove",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/events" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/events/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/backups" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/backups/**" }
+      ]
+    }
+  ]
+}

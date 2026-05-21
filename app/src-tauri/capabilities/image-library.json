@@ -1,0 +1,33 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "image-library",
+  "description": "READ-ONLY access to the on-disk image library (7 category folders + 2 loose root JPGs). Enforces the 'MUST keep images in their existing folders' behavioral rule (claude.md #2). NEVER add a write permission to this file — that breaks the read-only invariant. Companion: capabilities/app-writable.json. SOP: architecture/08-tauri-filesystem.md § Path Scopes #1. Each category folder needs both the bare path (for readDir) and the /** glob (for file reads).",
+  "windows": ["main"],
+  "permissions": [
+    "fs:allow-read-file",
+    "fs:allow-read-dir",
+    "fs:allow-stat",
+    "fs:allow-exists",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/אולם עיצוב בסיס 2026" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/אולם עיצוב בסיס 2026/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/חופות אולם גדול גאמוס" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/חופות אולם גדול גאמוס/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/חופות ריזורט" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/חופות ריזורט/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/חופות שידרוג" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/חופות שידרוג/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/מפות מפיות" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/מפות מפיות/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/עיצובים שידרוג" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/עיצובים שידרוג/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/ריזורט בסיס" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/ריזורט בסיס/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/כסא כלה בחוץ בסיס.jpg" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/כסא כלה בתוך האולם.jpg" }
+      ]
+    }
+  ]
+}

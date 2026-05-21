@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Shon Blaish",
+  "version": "0.1.0",
+  "identifier": "co.shonblaish.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "שון בלאיש — הפקות",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1280,
+        "minHeight": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' tauri: ipc: http://asset.localhost https://asset.localhost; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "F:/MyFiles/העסק שלי/שון בלאיש/אולם עיצוב בסיס 2026/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/חופות אולם גדול גאמוס/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/חופות ריזורט/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/חופות שידרוג/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/מפות מפיות/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/עיצובים שידרוג/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/ריזורט בסיס/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/כסא כלה בחוץ בסיס.jpg",
+          "F:/MyFiles/העסק שלי/שון בלאיש/כסא כלה בתוך האולם.jpg"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

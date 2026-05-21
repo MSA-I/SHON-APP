@@ -1,0 +1,23 @@
+[PENDING — architect populates from original DOCX]
+
+This file is the verbatim source of truth for the legal block embedded in every
+generated event DOCX. The original Word document at the project root
+("טופס תכנון אירוע - שון בלאיש.docx" or equivalent) contains two paragraphs:
+
+  1. Photography release (the couple authorizes the company to use stills/video
+     of the event for marketing and brand purposes, in any media, indefinitely,
+     without compensation).
+  2. Flower-availability disclaimer (designs depend on seasonal availability;
+     the company reserves the right to substitute equivalent flowers/vessels at
+     its professional discretion to preserve the visual quality).
+
+Architect: paste the EXACT Hebrew text from the original DOCX between the
+`---BEGIN---` and `---END---` markers below. Preserve every character,
+punctuation mark, and line break. Do not paraphrase, modernize, or correct
+typography. The DOCX builder reads this file at build time (Task #14+) or, for
+the MVP cut, the placeholder constant inside `app/src/lib/docx.ts` is used
+unchanged so the document does not silently ship invented legal language.
+
+---BEGIN---
+[LEGAL TERMS PENDING]
+---END---
