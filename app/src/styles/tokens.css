@@ -21,22 +21,22 @@
  */
 
 :root {
-  /* ─── Core palette (dark / Midnight Gilded Editorial) ──────────────── */
-  --ink:           #0F0E0C;   /* canvas primary */
-  --ink-raised:    #1A1714;   /* sidebar, modal, card (legacy alias) */
-  --cream:         #F5F0E8;   /* primary text */
-  --cream-muted:   #A8A39B;   /* secondary text, captions, helper */
-  --gold:          #C9A961;   /* decorative — borders, focus, ornament */
-  --gold-dark:     #A88B47;   /* gold-text-safe — small labels, eyebrows */
-  --border-subtle: #2A2520;   /* 1px hairlines */
-  --outline:       #4A4640;   /* stronger separator (stitch outline-variant) */
+  /* ─── Core palette (dark / Obsidian & Warm Gold) ───────────────────── */
+  --ink:           #1A1410;   /* canvas primary — warm dark brown (Stitch on-background) */
+  --ink-raised:    #261B14;   /* sidebar, modal, card (legacy alias) */
+  --cream:         #FFF8F5;   /* primary text (Stitch surface-bright) */
+  --cream-muted:   #A29B91;   /* secondary text, captions, helper (Stitch tertiary-container) */
+  --gold:          #E6C180;   /* decorative — borders, focus, ornament (Stitch primary-fixed-dim) */
+  --gold-dark:     #B8975A;   /* gold-text-safe — small labels, eyebrows (Stitch primary-container) */
+  --border-subtle: #38302A;   /* 1px hairlines — warm dark mahogany */
+  --outline:       #4D463A;   /* stronger separator (Stitch on-surface-variant) */
 
   /* ─── Surface elevation tiers (stitch surface-container-*) ─────────── */
   /* Tonal hierarchy WITHOUT shadows — every step is a warmer/brighter ink. */
-  --surface-lowest:  #0F0E0E; /* below-canvas, e.g. sticky breadcrumb bar */
-  --surface-low:     #1C1B1B; /* form containers, raised inputs */
-  --surface:         #201F1F; /* card body when explicitly raised */
-  --surface-bright:  #2B2A29; /* hover state for raised surfaces */
+  --surface-lowest:  #140F0B; /* below-canvas, e.g. sticky breadcrumb bar */
+  --surface-low:     #1F1610; /* form containers, raised inputs */
+  --surface:         #261B14; /* card body when explicitly raised */
+  --surface-bright:  #2E231A; /* hover state for raised surfaces */
 
   /* ─── Functional aliases (components reference these only) ─────────── */
   --bg-primary:    var(--ink);
@@ -103,25 +103,25 @@
  * extended 2026-05-21 with the surface-elevation tiers.
  */
 [data-theme="light"] {
-  /* Aliases */
-  --bg-primary:     #F5F0E8;   /* cream canvas — same as dark-mode --cream */
-  --bg-secondary:   #FFFFFF;   /* surface raised — pure white card/modal */
-  --bg-raised:      #FFFFFF;   /* form containers go pure white in light */
-  --bg-sunken:      #EFE9DD;   /* slightly warmer than canvas for sub-bar */
-  --text-primary:   #1A1714;   /* primary copy — was --ink-raised in dark */
-  --text-secondary: #6B6258;   /* muted copy — slightly warmer than dark muted */
-  --accent:         #A88B47;   /* accent gold — gold-dark reads better on cream */
-  --accent-deep:    #8C7032;   /* accent deep — slightly darker gold for hover/eyebrows */
-  --border:         #E5DFD3;   /* subtle hairline — very faint cream-tinted border */
-  --border-strong:  #C9C0AE;   /* stronger separator for headers/dividers */
-  --ring:           #A88B47;   /* focus ring — matches the light-mode accent */
+  /* Aliases — Pearl & Champagne palette (Stitch) */
+  --bg-primary:     #FFF8F5;   /* canvas — Stitch background */
+  --bg-secondary:   #FFF1EA;   /* surface raised — Stitch surface-container-low */
+  --bg-raised:      #FFF1EA;   /* form containers — Stitch surface-container-low */
+  --bg-sunken:      #F3E6DE;   /* slightly warmer than canvas — Stitch surface-container-high */
+  --text-primary:   #211A16;   /* primary copy — Stitch on-background */
+  --text-secondary: #6F6051;   /* muted copy — Stitch on-secondary-container */
+  --accent:         #755A23;   /* accent gold — Stitch primary */
+  --accent-deep:    #5B430D;   /* accent deep — Stitch on-primary-fixed-variant */
+  --border:         #D1C5B5;   /* subtle hairline — Stitch outline-variant */
+  --border-strong:  #7F7668;   /* stronger separator — Stitch outline */
+  --ring:           #755A23;   /* focus ring — matches light-mode accent */
 
-  /* Surface elevation tiers re-binding */
-  --surface-lowest: #EFE9DD;
-  --surface-low:    #FFFFFF;
-  --surface:        #FFFFFF;
-  --surface-bright: #F5F0E8;
+  /* Surface elevation tiers re-binding (Pearl & Champagne) */
+  --surface-lowest: #FFFFFF;
+  --surface-low:    #FFF1EA;   /* Stitch surface-container-low */
+  --surface:        #F9EBE4;   /* Stitch surface-container */
+  --surface-bright: #F3E6DE;   /* Stitch surface-container-high */
 
-  /* Danger token darkened so 4.5:1 on cream canvas (#F5F0E8) is met. */
+  /* Danger token darkened so 4.5:1 on pearl canvas is met. */
   --danger: #B23A3A;
 }

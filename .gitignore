@@ -22,6 +22,7 @@
 
 # Local DB / scratch / backups
 ruvector.db
+.swarm/
 .tmp/
 backups/
 .claude/
@@ -60,6 +61,11 @@ build/
 
 # Tauri build output
 app/src-tauri/target/
+app/src-tauri/WixTools/
+app/src-tauri/gen/
+*.exe
+*.msi
+*.nsis
 
 # OS / editor
 .DS_Store

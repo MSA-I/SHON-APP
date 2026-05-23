@@ -19,10 +19,10 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/events" },
-        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/events/**" },
-        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/backups" },
-        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/backups/**" }
+        { "path": "C:/Users/sara/Desktop/שון בלאיש/events" },
+        { "path": "C:/Users/sara/Desktop/שון בלאיש/events/**" },
+        { "path": "C:/Users/sara/Desktop/שון בלאיש/backups" },
+        { "path": "C:/Users/sara/Desktop/שון בלאיש/backups/**" }
       ]
     }
   ]

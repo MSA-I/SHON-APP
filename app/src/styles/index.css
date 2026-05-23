@@ -30,20 +30,20 @@
    * — used where 1px on `--border-subtle` is too quiet (header bottom rule
    * over the breadcrumb bar, sticky footer top rule, etc.).
    */
-  --color-ink:             #0F0E0C;
-  --color-ink-raised:      #1A1714;
-  --color-cream:           #F5F0E8;
-  --color-cream-muted:     #A8A39B;
-  --color-gold:            #C9A961;
-  --color-gold-dark:       #A88B47;
-  --color-border-subtle:   #2A2520;
-  --color-outline:         #4A4640;
+  --color-ink:             #1A1410;
+  --color-ink-raised:      #261B14;
+  --color-cream:           #FFF8F5;
+  --color-cream-muted:     #A29B91;
+  --color-gold:            #E6C180;
+  --color-gold-dark:       #B8975A;
+  --color-border-subtle:   #38302A;
+  --color-outline:         #4D463A;
 
   /* Surface elevation tiers (additive, 2026-05-21 consolidation) */
-  --color-surface-lowest:  #0F0E0E;
-  --color-surface-low:     #1C1B1B;
-  --color-surface:         #201F1F;
-  --color-surface-bright:  #2B2A29;
+  --color-surface-lowest:  #140F0B;
+  --color-surface-low:     #1F1610;
+  --color-surface:         #261B14;
+  --color-surface-bright:  #2E231A;
 
   /* ─── Type families — usable as font-serif, font-sans, font-mono ──── */
   --font-serif: 'Frank Ruhl Libre', 'David Libre', 'Times New Roman', serif;
@@ -157,20 +157,20 @@
  * NOTE: staged but not yet wired into App.tsx — pending SOP 13.
  */
 [data-theme="light"] {
-  --color-ink:             #F5F0E8;   /* canvas in light is cream */
-  --color-ink-raised:      #FFFFFF;   /* raised surface = pure white */
-  --color-cream:           #1A1714;   /* "cream" utility now paints dark text */
-  --color-cream-muted:     #6B6258;   /* muted text — warm dark gray */
-  --color-gold:            #A88B47;   /* gold-dark reads better on cream */
-  --color-gold-dark:       #8C7032;   /* slightly darker gold for eyebrows/hover */
-  --color-border-subtle:   #E5DFD3;   /* faint hairline */
-  --color-outline:         #C9C0AE;   /* stronger separator on cream */
+  --color-ink:             #FFF8F5;   /* canvas in light — Stitch background */
+  --color-ink-raised:      #FFF1EA;   /* raised surface — Stitch surface-container-low */
+  --color-cream:           #211A16;   /* text in light — Stitch on-background */
+  --color-cream-muted:     #6F6051;   /* muted text — Stitch on-secondary-container */
+  --color-gold:            #755A23;   /* accent — Stitch primary */
+  --color-gold-dark:       #5B430D;   /* deep accent — Stitch on-primary-fixed-variant */
+  --color-border-subtle:   #D1C5B5;   /* faint hairline — Stitch outline-variant */
+  --color-outline:         #7F7668;   /* stronger separator — Stitch outline */
 
-  /* Surface elevation tiers — re-bound for cream canvas */
-  --color-surface-lowest:  #EFE9DD;   /* slightly warmer than canvas */
-  --color-surface-low:     #FFFFFF;   /* pure white form container */
-  --color-surface:         #FFFFFF;   /* pure white card body */
-  --color-surface-bright:  #F5F0E8;   /* hover state — back to cream */
+  /* Surface elevation tiers — re-bound for pearl canvas */
+  --color-surface-lowest:  #FFFFFF;
+  --color-surface-low:     #FFF1EA;   /* Stitch surface-container-low */
+  --color-surface:         #F9EBE4;   /* Stitch surface-container */
+  --color-surface-bright:  #F3E6DE;   /* Stitch surface-container-high */
 }
 
 /* ─── Base reset & RTL flow ────────────────────────────────────────────── */
@@ -298,7 +298,7 @@
 
   /* Selection — cream text on a faint gold tint. */
   ::selection {
-    background-color: rgba(201, 169, 97, 0.25); /* gold @ 25% */
+    background-color: rgba(230, 193, 128, 0.25); /* gold @ 25% */
     color: var(--text-primary);
   }
 

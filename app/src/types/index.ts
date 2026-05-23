@@ -418,4 +418,4 @@ export const BACKUPS_DIRNAME = 'backups' as const;
 export const EVENT_DOCX_FILENAME = 'plan.docx' as const;
 
 /** Default project root for first-run / development. Production reads from runtime config. */
-export const DEFAULT_PROJECT_ROOT = 'F:/MyFiles/העסק שלי/שון בלאיש' as const;
+export const DEFAULT_PROJECT_ROOT = 'C:/Users/sara/Desktop/שון בלאיש' as const;
