@@ -324,6 +324,84 @@ export async function deriveColorFromThumbnail(
 }
 
 // ===========================================================================
+// C. Visual range heuristic (curator-inspected, 2026-05-24)
+// ===========================================================================
+/**
+ * Direct visual inspection of the מפות מפיות 0S3A#### sequence by the
+ * auto-tag curator. Each range covers a contiguous block of images shot in
+ * the same session with the same color/style.
+ *
+ * Format: { pathFragment, from, to, labels }
+ *   pathFragment — substring of image.path to scope the rule to one folder.
+ *   from / to    — inclusive numeric range of the filename number.
+ *   labels       — Hebrew labels to emit.
+ */
+const VISUAL_RANGE_DICT: ReadonlyArray<{
+  pathFragment: string;
+  from: number;
+  to: number;
+  labels: readonly string[];
+}> = [
+  // ── מפות מפיות — individual napkin color swatches ─────────────────────
+  { pathFragment: 'מפות מפיות', from: 1412, to: 1419, labels: ['ירוק זית', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1420, to: 1444, labels: ['שחור', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1445, to: 1459, labels: ['תכלת', 'כחול בהיר', 'פשתן'] },
+  { pathFragment: 'מפות מפיות', from: 1460, to: 1469, labels: ['ורוד', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1470, to: 1479, labels: ['כחול נייבי', 'כחול כהה', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1480, to: 1494, labels: ['שמנת', "בז'", 'פשתן'] },
+  { pathFragment: 'מפות מפיות', from: 1495, to: 1499, labels: ['ורוד אבק', 'מוב', 'פשתן'] },
+  { pathFragment: 'מפות מפיות', from: 1500, to: 1509, labels: ['זהב', 'שמפניה', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1510, to: 1514, labels: ['ורוד אבק', 'מוב', 'פשתן'] },
+  { pathFragment: 'מפות מפיות', from: 1515, to: 1519, labels: ['ירוק זית', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1520, to: 1529, labels: ['לבן', 'פשתן'] },
+  { pathFragment: 'מפות מפיות', from: 1530, to: 1539, labels: ['זהב', 'שמפניה', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1540, to: 1546, labels: ['ירוק זית', 'פשתן'] },
+  { pathFragment: 'מפות מפיות', from: 1547, to: 1559, labels: ['תכלת', 'כחול בהיר', 'סאטן'] },
+  { pathFragment: 'מפות מפיות', from: 1560, to: 1569, labels: ['כחול כהה', 'טיל', 'פשתן'] },
+
+  // ── מפות מפיות — full table design photos (from ~1570) ─────────────────
+  { pathFragment: 'מפות מפיות', from: 1570, to: 1579, labels: ['עיצוב שולחן', 'שנדליר', 'נרות'] },
+  { pathFragment: 'מפות מפיות', from: 1580, to: 1589, labels: ['עיצוב שולחן', 'לבן'] },
+  { pathFragment: 'מפות מפיות', from: 1590, to: 1609, labels: ['עיצוב שולחן', 'ורוד'] },
+  { pathFragment: 'מפות מפיות', from: 1610, to: 1629, labels: ['עיצוב שולחן', 'ורוד', 'לילך'] },
+  { pathFragment: 'מפות מפיות', from: 1630, to: 1649, labels: ['עיצוב שולחן', 'ורוד', 'שנדליר'] },
+  { pathFragment: 'מפות מפיות', from: 1650, to: 1679, labels: ['עיצוב שולחן', 'ורוד'] },
+  { pathFragment: 'מפות מפיות', from: 1680, to: 1699, labels: ['עיצוב שולחן', 'לבן', 'שחור'] },
+  { pathFragment: 'מפות מפיות', from: 1700, to: 1719, labels: ['עיצוב שולחן', 'בורדו', 'שנדליר'] },
+  { pathFragment: 'מפות מפיות', from: 1720, to: 1739, labels: ['עיצוב שולחן', 'בורדו', 'פרחים'] },
+  { pathFragment: 'מפות מפיות', from: 1740, to: 1814, labels: ['עיצוב שולחן', 'לבן', 'פרחים לבנים'] },
+  { pathFragment: 'מפות מפיות', from: 1815, to: 1859, labels: ['עיצוב שולחן', 'לבן', 'פרחים לבנים'] },
+  { pathFragment: 'מפות מפיות', from: 1860, to: 1876, labels: ['עיצוב שולחן', 'נרות', 'צילנדר'] },
+  { pathFragment: 'מפות מפיות', from: 1877, to: 1909, labels: ['עיצוב שולחן', 'שנדליר', 'זהב'] },
+  { pathFragment: 'מפות מפיות', from: 1910, to: 1970, labels: ['עיצוב שולחן', 'אולם', 'ורוד'] },
+];
+
+/** Extract trailing number from a filename stem, e.g. "0S3A1412" → 1412. */
+function extractFilenameNumber(name: string): number | null {
+  const m = name.match(/(\d+)\s*$/);
+  if (!m || !m[1]) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Pure, synchronous. Returns curator-inspected labels for images whose
+ * filename number falls within a known visual range.
+ */
+export function deriveLabelsFromVisualRange(image: ImageMetadata): string[] {
+  const num = extractFilenameNumber(image.name);
+  if (num === null) return [];
+  const path = image.path.normalize('NFC');
+  const out = new Set<string>();
+  for (const rule of VISUAL_RANGE_DICT) {
+    if (path.includes(rule.pathFragment) && num >= rule.from && num <= rule.to) {
+      for (const label of rule.labels) out.add(label);
+    }
+  }
+  return Array.from(out);
+}
+
+// ===========================================================================
 // Public driver
 // ===========================================================================
 
@@ -376,7 +454,10 @@ export async function autoTagLibrary(
         if (signal?.aborted) return;
 
         try {
-          const labels = new Set<string>(deriveLabelsFromName(image));
+          const labels = new Set<string>([
+            ...deriveLabelsFromName(image),
+            ...deriveLabelsFromVisualRange(image),
+          ]);
 
           // Pixel heuristic only for actual images (videos return null from
           // getOrBakeThumbnail). The thumb cache makes this near-free on
