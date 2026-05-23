@@ -21,17 +21,20 @@ import {
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useToast } from '../../contexts/ToastContext';
+import { listImageTags } from '../../lib/db';
 import { getOrBakeThumbnail, scanAll } from '../../lib/images';
 import {
   IMAGE_CATEGORIES,
   type ImageCategory,
   type ImageMetadata,
   type ImageSelection,
+  type ImageTag,
   type MediaKind,
 } from '../../types';
 import { Button } from '../ui/Button';
 import { CategoryTabs } from './CategoryTabs';
 import { Lightbox } from './Lightbox';
+import { SubCategoryTabs } from './SubCategoryTabs';
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -98,6 +101,42 @@ function matchesQuery(name: string, query: string): boolean {
   return a.includes(b);
 }
 
+/** Maximum number of sub-category chips to render (excluding "הכל"). */
+const MAX_SUBCATEGORIES = 8;
+
+/**
+ * Build the top-N sub-categories for an active main category from the union
+ * of `customLabels` across the tags of every image in that category. Sorted
+ * by descending count (ties broken by Hebrew locale compare). Returns the
+ * raw list — the "הכל" chip is prepended by the caller.
+ */
+function deriveSubCategories(
+  imagesInCategory: readonly ImageMetadata[],
+  tagsByPath: ReadonlyMap<string, ImageTag>,
+  limit: number,
+): { labels: string[]; counts: Record<string, number> } {
+  const counts = new Map<string, number>();
+  for (const img of imagesInCategory) {
+    const tag = tagsByPath.get(img.path);
+    if (!tag) continue;
+    for (const raw of tag.customLabels) {
+      const label = raw.trim().normalize('NFC');
+      if (!label) continue;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+  }
+  const ranked = Array.from(counts.entries())
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return a[0].localeCompare(b[0], 'he');
+    })
+    .slice(0, limit);
+  const labels = ranked.map(([label]) => label);
+  const countsOut: Record<string, number> = {};
+  for (const [label, count] of counts) countsOut[label] = count;
+  return { labels, counts: countsOut };
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -122,12 +161,20 @@ export function Gallery({
   >(() => new Map());
   const [scanComplete, setScanComplete] = useState(false);
 
+  // Tag map (populated alongside the scan from the imageTags store).
+  const [tagsByPath, setTagsByPath] = useState<Map<string, ImageTag>>(
+    () => new Map(),
+  );
+
   // Filters
   const [activeCategory, setActiveCategory] = useState<ImageCategory>(
     () => DEFAULT_CATEGORY[mode],
   );
   const [activeKind, setActiveKind] = useState<MediaKind>('image');
   const [query, setQuery] = useState('');
+  const [activeSubCategory, setActiveSubCategory] = useState<string | null>(
+    null,
+  );
 
   // Lightbox open state
   const [lightboxImage, setLightboxImage] = useState<ImageMetadata | null>(
@@ -144,6 +191,20 @@ export function Gallery({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // Tags load in parallel with the scan — they don't gate rendering and
+      // a failure here just disables the sub-category strip.
+      void (async () => {
+        try {
+          const tags = await listImageTags();
+          if (cancelled) return;
+          const map = new Map<string, ImageTag>();
+          for (const t of tags) map.set(t.imagePath, t);
+          setTagsByPath(map);
+        } catch (err) {
+          console.error('[gallery] listImageTags failed', err);
+        }
+      })();
+
       try {
         const result = await scanAll({
           onCategoryDone: (category, count) => {
@@ -204,14 +265,61 @@ export function Gallery({
   }, [activeKind, hasVideosInActiveCategory]);
 
   // -----------------------------------------------------------------------
-  // Visible images = active category × active kind × search query
+  // Sub-category options derived from imageTags for the active main category.
+  // Re-derived on category, kind, or tag map change. Hidden when fewer than 2
+  // distinct labels exist (the strip is information-dense; one chip is noise).
+  // -----------------------------------------------------------------------
+  const { subCategoryOptions, subCategoryCounts } = useMemo(() => {
+    const list = (byCategory.get(activeCategory) ?? []).filter(
+      (img) => img.kind === activeKind,
+    );
+    const { labels, counts } = deriveSubCategories(
+      list,
+      tagsByPath,
+      MAX_SUBCATEGORIES,
+    );
+    return { subCategoryOptions: labels, subCategoryCounts: counts };
+  }, [byCategory, activeCategory, activeKind, tagsByPath]);
+
+  // Reset sub-filter when the user changes main category or media kind, since
+  // a label that exists in one category usually does not exist in another.
+  useEffect(() => {
+    setActiveSubCategory(null);
+  }, [activeCategory, activeKind]);
+
+  // Drop a stale sub-selection if the option vanished (e.g. tag map updated).
+  useEffect(() => {
+    if (
+      activeSubCategory !== null &&
+      !subCategoryOptions.includes(activeSubCategory)
+    ) {
+      setActiveSubCategory(null);
+    }
+  }, [activeSubCategory, subCategoryOptions]);
+
+  // -----------------------------------------------------------------------
+  // Visible images = active category × active kind × search query × sub-cat
   // -----------------------------------------------------------------------
   const visibleImages = useMemo<ImageMetadata[]>(() => {
     const list = byCategory.get(activeCategory) ?? [];
-    return list.filter(
-      (img) => img.kind === activeKind && matchesQuery(img.name, query),
-    );
-  }, [byCategory, activeCategory, activeKind, query]);
+    return list.filter((img) => {
+      if (img.kind !== activeKind) return false;
+      if (!matchesQuery(img.name, query)) return false;
+      if (activeSubCategory !== null) {
+        const tag = tagsByPath.get(img.path);
+        if (!tag) return false;
+        if (!tag.customLabels.includes(activeSubCategory)) return false;
+      }
+      return true;
+    });
+  }, [
+    byCategory,
+    activeCategory,
+    activeKind,
+    query,
+    activeSubCategory,
+    tagsByPath,
+  ]);
 
   // -----------------------------------------------------------------------
   // Selection helpers
@@ -347,6 +455,16 @@ export function Gallery({
           onChange={setActiveCategory}
           counts={counts}
         />
+        {/* Sub-category strip — derived from imageTags. Hidden when there are
+            fewer than 2 distinct labels for the active main category. */}
+        {subCategoryOptions.length >= 2 ? (
+          <SubCategoryTabs
+            options={[SubCategoryTabs.ALL_LABEL, ...subCategoryOptions]}
+            active={activeSubCategory}
+            onChange={setActiveSubCategory}
+            counts={subCategoryCounts}
+          />
+        ) : null}
       </div>
 
       {/* ───── Grid (windowed) ─────────────────────────────────────────── */}

@@ -147,6 +147,25 @@ Empirical target: **scrolling at 60fps** through `מפות מפיות` (520 imag
 - Esc closes Lightbox. Arrow keys navigate prev/next.
 - All labels and aria-text are Hebrew strings (the user is a Hebrew speaker).
 
+## Sub-category Filtering
+
+A second chip strip renders below the main 8-category strip when the active main category has **2 or more** distinct `customLabels` across its `imageTags`. The strip is data-derived, not configured: when SOP 12's auto pre-pass classifies napkins as `לבן · ורוד · זהב …`, the user gets those chips for free.
+
+### Derivation
+- For every image in the active main category × media kind, look up its `ImageTag` via the path-keyed map loaded once at gallery mount via `db.listImageTags()`.
+- Aggregate `customLabels` into a frequency map.
+- Take the top **8** by descending count, tie-broken by Hebrew `localeCompare`.
+- Prepend a `הכל` chip that maps to `activeSubCategory = null` (no filter).
+- Hide the strip entirely when fewer than 2 distinct labels exist (one chip is noise).
+
+### Filter semantics
+- `activeSubCategory = null` → unchanged behaviour (active main category × kind × search query).
+- Otherwise the image's tag must include `activeSubCategory` in its `customLabels`. Untagged images are excluded.
+- Changing the main category or media kind resets `activeSubCategory` to `null`.
+
+### Implementation pointer
+`Gallery.tsx` owns the state; `SubCategoryTabs.tsx` is a presentational chip strip that mirrors `CategoryTabs.tsx`'s style (gold border, sharp corners, uppercase tracking — sized one step down to differentiate the row visually).
+
 ## Self-Annealing Notes
 
 | Date | Issue | Fix |
@@ -156,6 +175,7 @@ Empirical target: **scrolling at 60fps** through `מפות מפיות` (520 imag
 | 2026-05-20 | Selection-counter test-id locked as `selection-counter` (used by both Gallery top bar and `TableDesignsTab` counter pill). | SOP 15 §6 canonical test-ID list. |
 | 2026-05-21 | Lazy thumbnails: each `<Tile>` calls `images.getOrBakeThumbnail(image)` in `useEffect`, wraps the resulting `Blob` with `URL.createObjectURL`, and revokes on unmount/dependency-change. Videos render the `וידאו` placeholder; bake errors render an `×` placeholder. | Phase 3B implementation; matches SOP 05 § Performance Architecture #2. |
 | 2026-05-21 | `bakeThumbnailsBatch` background-on-first-run is queued for Phase 4 so the TaggingPass + first-meeting gallery feel hot. | Refinement-pass entry; tracked in `task_plan.md` Phase 4. |
+| 2026-05-23 | Sub-category strip landed (§ Sub-category Filtering). Reads `imageTags` once on gallery mount via `db.listImageTags()`; derives top-8 `customLabels` per active main category; new `SubCategoryTabs.tsx` mirrors the existing `CategoryTabs.tsx` style. Filter is additive — main category × kind × search × sub-category. | Companion to SOP 12 § 4.5 auto pre-pass — the auto-tagger writes the labels, this surface consumes them. |
 
 ## Verification (planned)
 

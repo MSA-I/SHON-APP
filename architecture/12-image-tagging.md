@@ -124,6 +124,34 @@ The pass MUST be uninterruptible by any other navigation:
 - The browser/Tauri window's close button still works — that's the quit-and-resume path.
 - Keyboard shortcuts: `Enter` triggers "שמור והבא" only when the focus is in the notes textarea or the labels input has no pending text. Otherwise no app-level shortcuts.
 
+## 4.5 Automatic pre-pass
+
+The 884-image manual walk in § 4 is the worst case. On a fresh library (`imageTags.length === 0` at boot), the pass mounts an **automatic pre-pass** first — a deterministic best-effort classifier that writes `ImageTag` rows for every image it can confidently label. The manual UI mounts only after the pre-pass resolves, and `firstUntaggedFrom(...)` naturally lands on the first image the auto-tagger could not classify. Shon walks ~150 leftovers instead of all 884.
+
+### Heuristics
+
+`lib/auto-tag.ts` runs both heuristics per image and unions their output. A tag is written iff the union is non-empty.
+
+**A. Filename heuristic — pure, synchronous.** A locked Hebrew dictionary keyed by substring match against `image.name` + `image.path`. Tokens cover chuppah types (`מרובעת · עגולה · שקופה · אובלית · בוהו`), decor objects (`פמוט · שנדליר · סחלב · טוליפ · נרות · צילנדר · סידור · אבירים · גיבסניות · אהיל`), materials (`קטיפה · משי · בדים`), furniture (`כיסא כלה · בריכה · חופה · שולחן · שדרה`), and color words (`לבן · ורוד · אדום · זהב · כסף · שחור · חום · כחול · ירוק · סגול · שמנת`). The dictionary lives in one `const` in `lib/auto-tag.ts` so it is auditable in one place — every label that escapes the auto-tagger came from this list.
+
+**B. Pixel-color heuristic — async.** Decode the cached 256px WebP thumbnail (via `images.getOrBakeThumbnail`), draw onto a 64×64 `OffscreenCanvas`, sample 4096 RGBA pixels, convert to HSL, and bin into the locked palette `{לבן · שמנת · ורוד · אדום · זהב · ירוק · כחול · סגול · שחור · חום}`. The dominant bucket is emitted iff its share is **≥ 0.40** (`COLOR_CONFIDENCE`). Below threshold: no chip. Achromatic pixels (saturation < 0.18) split by lightness into `לבן` / `שמנת` / `שחור` / drop. Chromatic pixels split by hue range; magenta/purple splits at `l > 0.6` into `ורוד` vs `סגול`. Yellows split at `s > 0.4 && l < 0.7` into `זהב` vs `שמנת`.
+
+### Confidence gate
+- ≥ 1 chip from either heuristic → `putImageTag()` writes a tag and the image is considered classified.
+- 0 chips from both → no row is written; the manual pass will land on this image.
+
+### Concurrency, durability, abort
+- Chunks of 8 images processed in parallel; `await new Promise(r => setTimeout(r, 0))` between chunks so the progress UI stays responsive.
+- One transaction per `putImageTag` call (matches the manual pass) — every successful write is durable on its own. Quit-and-resume mid-auto-pass is safe: closing the window leaves whatever was already written, and the next boot sees `imageTags.length > 0` and skips the auto-pass entirely (going straight to the manual pass for the rest).
+- Cancellable via `AbortSignal`; the `<TaggingPass>` UI exposes a `בטל ועבור לתיוג ידני` button that aborts the controller and falls through to the manual pass.
+
+### Auto-tagged rows are first-class
+Auto-written `ImageTag` rows carry no special flag. They look identical to manually-tagged rows: `imagePath`, optional `userCategory` (always undefined for auto), `customLabels[]`, empty `notes`, `taggedAt = Date.now()` (re-stamped by `db.ts` per INV-12). The `TagsDisplay` event-tab strip and the new Gallery sub-category strip (SOP 05 § Sub-category Filtering) consume them without distinction. v1.x re-tagging will surface the same rows for editing.
+
+### When the auto-pass does NOT run
+- `imageTags.length > 0` at boot — quit-and-resume, partial prior runs, or v1→v2 backup restore that left rows in place. The manual pass picks up where it stopped.
+- The user clicks `בטל ועבור לתיוג ידני` — the in-flight chunk completes and the component transitions straight to the manual pass.
+
 ## 5. Completion
 
 The "סיים תיוג" button:
@@ -263,3 +291,4 @@ G. **v1 backup compatibility.** Manually craft a v1 envelope `{schemaVersion: 1,
 | 2026-05-20 | `<TaggingPass />` component shipped per § 4 UX flow. On mount: `Promise.all([images.scanAll(), db.listImageTags()])`; flatten `byCategory` to one array sorted by `(IMAGE_CATEGORIES order, Hebrew localeCompare)`; synthetic `כיסא כלה` lands last. Cursor parks at first untagged index; finishing auto-triggers `db.completeTaggingPass` + `backup.exportBackup('tagging-complete')`. Reduced-motion respected. | Phase 3B implementation; matches SOP 12 § 4 + § 5. |
 | 2026-05-20 | `BackupExportReason` extended with `'tagging-complete'`. The `as never` casts that `TaggingPass.tsx` used as a temporary bridge during the parallel-agent swarm are no longer required. | Phase 3A must-fix close. |
 | 2026-05-21 | The "deferred re-tagging" path (SOP 12 §8) lands in v1.x — Settings will expose a button that flips `meta.taggingComplete` back to `false`. For MVP, the pass is unreachable from any UI surface once complete, per Behavioral Rule #11. | Confirmed during Phase 4 SOP sync. |
+| 2026-05-23 | § 4.5 Automatic pre-pass added. `lib/auto-tag.ts` runs two heuristics (Hebrew filename dictionary + 64×64 HSL pixel histogram on the cached thumbnail) and writes `ImageTag` rows for every image with at least one confident chip. The manual pass then walks only the leftovers. `<TaggingPass>` gained a `phase: 'boot' \| 'auto' \| 'manual'` state machine; on a fresh library (`imageTags.length === 0`) the auto phase mounts a progress card (`{done} / {total}`, current filename, abort button) before transitioning to the manual UI. Quit-and-resume during auto is safe — partial writes are durable, and the next boot bypasses auto. Companion: SOP 05 § Sub-category Filtering consumes the new `customLabels`. | User-driven scope cut: 884-image walk replaced with ~80% auto-coverage + a short manual cleanup. |

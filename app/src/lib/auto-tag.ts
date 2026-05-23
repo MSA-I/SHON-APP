@@ -1,0 +1,435 @@
+// SOP: architecture/12-image-tagging.md § 4.5 Automatic pre-pass
+// SOP: claude.md § Behavioral Rules #11 (one-time gate) — auto-tagged rows are
+//      first-class ImageTag records, identical in shape to manually-tagged ones.
+// SOP: claude.md § Data Schemas (ImageTag).
+//
+// Layer 3 — pure deterministic library. Allowed imports: '../types', './db',
+// './images'. No React, no framer-motion, no '@tauri-apps/*' direct.
+//
+// The auto-tag pre-pass walks every scanned ImageMetadata once and writes an
+// `ImageTag` row when at least one of two stacked heuristics is confident:
+//   A. Filename heuristic — Hebrew substring match on a fixed dictionary.
+//   B. Pixel-color heuristic — HSL bucket of the cached 256px WebP thumbnail.
+// Images that neither heuristic can classify are left without a tag, so the
+// SOP 12 manual TaggingPass naturally lands on them via firstUntaggedFrom().
+//
+// Public surface:
+//   • autoTagLibrary(images, opts?)             → AutoTagResult
+//   • deriveLabelsFromName(image)                → string[]   (exposed for tests)
+//   • deriveColorFromThumbnail(blob)             → string|null (exposed for tests)
+//
+// All Hebrew strings emitted as labels are NFC-normalized at the source dictionary
+// so db.ts does not need to re-transform them.
+
+import { type ImageMetadata, type ImageTag, LibError } from '../types';
+import { putImageTag } from './db';
+import { getOrBakeThumbnail } from './images';
+
+// ===========================================================================
+// A. Filename heuristic
+// ===========================================================================
+
+/**
+ * Token → labels emitted on a substring match. Order matters only for
+ * deterministic dedupe — the union of labels is what gets written.
+ *
+ * The list is intentionally small. We err on the side of NOT inventing labels
+ * when uncertain — Shon will tag the rest manually via SOP 12.
+ */
+const FILENAME_DICTIONARY: ReadonlyArray<{
+  match: readonly string[];
+  emit: readonly string[];
+}> = [
+  // Chuppah types ---------------------------------------------------------
+  { match: ['מרובעת', 'מרובע'], emit: ['מרובעת'] },
+  { match: ['עגולה', 'עגול'], emit: ['עגולה'] },
+  { match: ['שקופה', 'שקופהה', 'שקוף'], emit: ['שקופה'] },
+  { match: ['אובלית', 'אליפסה'], emit: ['אובלית'] },
+  { match: ['בוהו'], emit: ['בוהו'] },
+
+  // Decor objects ---------------------------------------------------------
+  { match: ['פמוט', 'פמוטי', 'פמוטים'], emit: ['פמוט'] },
+  { match: ['שנדליר'], emit: ['שנדליר'] },
+  { match: ['סחלב'], emit: ['סחלב'] },
+  { match: ['טוליפ'], emit: ['טוליפ'] },
+  { match: ['נרות', 'נר '], emit: ['נרות'] },
+  { match: ['צילנדר', 'צילנדרים'], emit: ['צילנדר'] },
+  { match: ['סידור', 'סידורי'], emit: ['סידור'] },
+  { match: ['אביר', 'אבירים'], emit: ['אבירים'] },
+  { match: ['גיבסניות'], emit: ['גיבסניות'] },
+  { match: ['אהיל'], emit: ['אהיל'] },
+
+  // Materials -------------------------------------------------------------
+  { match: ['קטיפה'], emit: ['קטיפה'] },
+  { match: ['משי'], emit: ['משי'] },
+  { match: ['בדים', 'וילון'], emit: ['בדים'] },
+
+  // Furniture / setting ---------------------------------------------------
+  { match: ['כסא כלה', 'כיסא כלה'], emit: ['כיסא כלה'] },
+  { match: ['בריכה'], emit: ['בריכה'] },
+  { match: ['חופה'], emit: ['חופה'] },
+  { match: ['שולחן', 'שולחנות'], emit: ['שולחן'] },
+  { match: ['שדרה'], emit: ['שדרה'] },
+
+  // Color words (also produced by pixel heuristic; filename match wins
+  // when both fire — same label, dedupe on write). ------------------------
+  { match: ['לבן', 'לבנים', 'לבנות'], emit: ['לבן'] },
+  { match: ['ורוד', 'ורודים', 'ורודות'], emit: ['ורוד'] },
+  { match: ['אדום', 'אדומים', 'אדומות'], emit: ['אדום'] },
+  { match: ['זהב', 'זהובים', 'מוזהב'], emit: ['זהב'] },
+  { match: ['כסף', 'כסוף'], emit: ['כסף'] },
+  { match: ['שחור', 'שחורים', 'שחורות'], emit: ['שחור'] },
+  { match: ['חום', 'חומים', 'חומות'], emit: ['חום'] },
+  { match: ['כחול', 'כחולים'], emit: ['כחול'] },
+  { match: ['ירוק', 'ירוקים'], emit: ['ירוק'] },
+  { match: ['סגול', 'סגולים'], emit: ['סגול'] },
+  { match: ['שמנת'], emit: ['שמנת'] },
+];
+
+/**
+ * Pure, synchronous. Returns the deduped labels emitted by the filename
+ * dictionary against `image.name` + `image.path` (NFC-normalized).
+ */
+export function deriveLabelsFromName(image: ImageMetadata): string[] {
+  const haystack = `${image.name} ${image.path}`.normalize('NFC');
+  const out = new Set<string>();
+  for (const rule of FILENAME_DICTIONARY) {
+    for (const token of rule.match) {
+      if (haystack.includes(token)) {
+        for (const label of rule.emit) out.add(label);
+        break; // any one token in the rule is enough
+      }
+    }
+  }
+  return Array.from(out);
+}
+
+// ===========================================================================
+// B. Pixel-color heuristic
+// ===========================================================================
+
+/** Hebrew color palette emitted by the pixel heuristic. Locked here. */
+const COLOR_PALETTE: readonly string[] = [
+  'לבן',
+  'שמנת',
+  'ורוד',
+  'אדום',
+  'זהב',
+  'ירוק',
+  'כחול',
+  'סגול',
+  'שחור',
+  'חום',
+];
+
+/** Confidence threshold — top bucket must own at least this share of pixels. */
+const COLOR_CONFIDENCE = 0.4;
+
+/** Sample grid edge — 64×64 = 4096 pixels per image. */
+const SAMPLE_EDGE = 64;
+
+type RGB = { r: number; g: number; b: number };
+type HSL = { h: number; s: number; l: number };
+
+function rgbToHsl({ r, g, b }: RGB): HSL {
+  const rN = r / 255;
+  const gN = g / 255;
+  const bN = b / 255;
+  const max = Math.max(rN, gN, bN);
+  const min = Math.min(rN, gN, bN);
+  const l = (max + min) / 2;
+  const d = max - min;
+  let h = 0;
+  let s = 0;
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case rN:
+        h = ((gN - bN) / d + (gN < bN ? 6 : 0)) * 60;
+        break;
+      case gN:
+        h = ((bN - rN) / d + 2) * 60;
+        break;
+      default:
+        h = ((rN - gN) / d + 4) * 60;
+        break;
+    }
+  }
+  return { h, s, l };
+}
+
+/**
+ * Map one HSL pixel to a palette bucket. Returns null for "indeterminate"
+ * pixels (mid-grey, low saturation in mid-lightness) so they don't pollute the
+ * histogram.
+ */
+function bucketForPixel({ h, s, l }: HSL): string | null {
+  // Achromatic branch — saturation < 0.18 means we trust lightness only.
+  if (s < 0.18) {
+    if (l > 0.85) return 'לבן';
+    if (l > 0.7) return 'שמנת';
+    if (l < 0.18) return 'שחור';
+    return null; // mid-grey — drop
+  }
+
+  // Chromatic branch — hue dictates the bucket.
+  // Cream / gold split: warm yellows in the lighter range fall to שמנת,
+  // saturated yellows to זהב.
+  if (h >= 340 || h < 15) {
+    // Reds. Light + low-mid saturation → ורוד; otherwise אדום.
+    if (l > 0.6 && s < 0.6) return 'ורוד';
+    return 'אדום';
+  }
+  if (h < 45) {
+    // Orange-brown range — collapse to חום (no orange in palette).
+    return 'חום';
+  }
+  if (h < 70) {
+    // Yellows → gold when saturated, cream when pale.
+    if (s > 0.4 && l < 0.7) return 'זהב';
+    return 'שמנת';
+  }
+  if (h < 160) {
+    return 'ירוק';
+  }
+  if (h < 250) {
+    return 'כחול';
+  }
+  if (h < 340) {
+    // Magenta / purple. Lighter → ורוד; darker → סגול.
+    return l > 0.6 ? 'ורוד' : 'סגול';
+  }
+  return null;
+}
+
+function isOffscreenCanvasAvailable(): boolean {
+  return (
+    typeof globalThis !== 'undefined' &&
+    typeof (globalThis as unknown as { OffscreenCanvas?: unknown })
+      .OffscreenCanvas !== 'undefined'
+  );
+}
+
+type SampleCanvas = {
+  width: number;
+  height: number;
+  getContext(id: '2d'): CanvasRenderingContext2D | null;
+};
+
+function makeSampleCanvas(): SampleCanvas {
+  if (isOffscreenCanvasAvailable()) {
+    return new (
+      globalThis as unknown as {
+        OffscreenCanvas: new (w: number, h: number) => SampleCanvas;
+      }
+    ).OffscreenCanvas(SAMPLE_EDGE, SAMPLE_EDGE);
+  }
+  if (typeof document === 'undefined') {
+    throw new LibError('auto-tag: no canvas available', {
+      code: 'IMG_THUMBNAIL',
+    });
+  }
+  const c = document.createElement('canvas');
+  c.width = SAMPLE_EDGE;
+  c.height = SAMPLE_EDGE;
+  return c as unknown as SampleCanvas;
+}
+
+/**
+ * Async. Decode the WebP thumbnail blob, downsample to 64×64, and pick a
+ * single palette label iff the dominant bucket owns ≥ COLOR_CONFIDENCE share.
+ * Returns null otherwise.
+ *
+ * Failures (decode errors, missing canvas) resolve to null — the caller treats
+ * them as "no color signal" and the image falls through to the manual pass.
+ */
+export async function deriveColorFromThumbnail(
+  blob: Blob,
+): Promise<string | null> {
+  if (!blob || typeof (blob as Blob).size !== 'number') return null;
+  if (typeof createImageBitmap !== 'function') return null;
+
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch {
+    return null;
+  }
+
+  let canvas: SampleCanvas;
+  try {
+    canvas = makeSampleCanvas();
+  } catch {
+    bitmap.close?.();
+    return null;
+  }
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bitmap.close?.();
+    return null;
+  }
+
+  try {
+    ctx.drawImage(
+      bitmap as unknown as CanvasImageSource,
+      0,
+      0,
+      SAMPLE_EDGE,
+      SAMPLE_EDGE,
+    );
+  } catch {
+    bitmap.close?.();
+    return null;
+  }
+  bitmap.close?.();
+
+  let imageData: ImageData;
+  try {
+    imageData = ctx.getImageData(0, 0, SAMPLE_EDGE, SAMPLE_EDGE);
+  } catch {
+    return null;
+  }
+
+  const histogram = new Map<string, number>();
+  let counted = 0;
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    const a = data[i + 3] ?? 255;
+    if (a < 200) continue; // skip transparent pixels
+    const bucket = bucketForPixel(rgbToHsl({ r, g, b }));
+    if (bucket === null) continue;
+    histogram.set(bucket, (histogram.get(bucket) ?? 0) + 1);
+    counted += 1;
+  }
+
+  if (counted === 0) return null;
+
+  let topBucket: string | null = null;
+  let topShare = 0;
+  for (const [bucket, count] of histogram) {
+    const share = count / counted;
+    if (share > topShare) {
+      topShare = share;
+      topBucket = bucket;
+    }
+  }
+
+  if (topBucket === null || topShare < COLOR_CONFIDENCE) return null;
+  if (!COLOR_PALETTE.includes(topBucket)) return null;
+  return topBucket;
+}
+
+// ===========================================================================
+// Public driver
+// ===========================================================================
+
+export type AutoTagResult = {
+  /** Images that received at least one confident label and were persisted. */
+  written: number;
+  /** Images neither heuristic could classify — left for the manual pass. */
+  skipped: number;
+  /** Thumbnail decode / IDB write errors. */
+  failed: number;
+};
+
+export type AutoTagProgress = (
+  done: number,
+  total: number,
+  current?: ImageMetadata,
+) => void;
+
+export type AutoTagOptions = {
+  onProgress?: AutoTagProgress;
+  signal?: AbortSignal;
+};
+
+const CHUNK_SIZE = 8;
+
+/**
+ * Walk the full ImageMetadata array and write an ImageTag for every image we
+ * can confidently classify. Yields between chunks so the progress UI stays
+ * responsive on a 884-image cold run.
+ *
+ * Per-image failures (decode error, IDB write error) increment `failed` but
+ * never abort the run — partial progress is desirable: every successful write
+ * is durable on its own transaction (SOP 02 § Performance Notes).
+ */
+export async function autoTagLibrary(
+  images: readonly ImageMetadata[],
+  opts: AutoTagOptions = {},
+): Promise<AutoTagResult> {
+  const { onProgress, signal } = opts;
+  const result: AutoTagResult = { written: 0, skipped: 0, failed: 0 };
+  const total = images.length;
+  if (total === 0) return result;
+
+  for (let start = 0; start < total; start += CHUNK_SIZE) {
+    if (signal?.aborted) break;
+    const slice = images.slice(start, start + CHUNK_SIZE);
+
+    await Promise.all(
+      slice.map(async (image, offset) => {
+        if (signal?.aborted) return;
+
+        try {
+          const labels = new Set<string>(deriveLabelsFromName(image));
+
+          // Pixel heuristic only for actual images (videos return null from
+          // getOrBakeThumbnail). The thumb cache makes this near-free on
+          // warm runs; on cold runs the bake itself is bounded by SOP 02.
+          if (image.kind === 'image') {
+            let blob: Blob | null = null;
+            try {
+              blob = await getOrBakeThumbnail(image);
+            } catch {
+              // thumbnail bake failure is non-fatal — fall through with what
+              // we got from the filename.
+              blob = null;
+            }
+            if (blob) {
+              const color = await deriveColorFromThumbnail(blob);
+              if (color) labels.add(color);
+            }
+          }
+
+          if (labels.size === 0) {
+            result.skipped += 1;
+            return;
+          }
+
+          const tag: ImageTag = {
+            imagePath: image.path,
+            customLabels: Array.from(labels),
+            notes: '',
+            taggedAt: 0, // db.ts re-stamps via INV-12
+          };
+          await putImageTag(tag);
+          result.written += 1;
+        } catch (err) {
+          result.failed += 1;
+          // Defensive — never let a per-image error escape the chunk.
+          // eslint-disable-next-line no-console
+          console.error('[auto-tag] failed for', image.path, err);
+        } finally {
+          if (onProgress) {
+            try {
+              onProgress(start + offset + 1, total, image);
+            } catch (cb) {
+              // eslint-disable-next-line no-console
+              console.error('[auto-tag] onProgress threw', cb);
+            }
+          }
+        }
+      }),
+    );
+
+    // Yield to the event loop so the React tree can repaint the progress UI.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  return result;
+}

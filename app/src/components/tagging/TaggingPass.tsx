@@ -33,6 +33,7 @@ import {
   setMeta,
 } from '../../lib/db';
 import { bakeThumbnailsBatch, scanAll, toImageSrc } from '../../lib/images';
+import { autoTagLibrary } from '../../lib/auto-tag';
 import { exportBackup } from '../../lib/backup';
 import {
   IMAGE_CATEGORIES,
@@ -219,6 +220,8 @@ function firstUntaggedFrom(
 // Component
 // ---------------------------------------------------------------------------
 
+type Phase = 'boot' | 'auto' | 'manual';
+
 export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
   const prefersReducedMotion = useReducedMotion();
 
@@ -228,6 +231,13 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
   const [cursor, setCursor] = useState(0);
   const [bootError, setBootError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [phase, setPhase] = useState<Phase>('boot');
+
+  // Auto-phase progress (filled in while phase === 'auto').
+  const [autoDone, setAutoDone] = useState(0);
+  const [autoTotal, setAutoTotal] = useState(0);
+  const [autoCurrentName, setAutoCurrentName] = useState<string | null>(null);
+  const autoAbortRef = useRef<AbortController | null>(null);
 
   // ── Per-card form state ─────────────────────────────────────────────────
   const [userCategory, setUserCategory] = useState<ImageCategory | undefined>();
@@ -246,7 +256,13 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
    */
   const lastSavedTagRef = useRef<ImageTag | null>(null);
 
-  // ── Boot effect: scan + load existing tags + pick cursor ────────────────
+  // ── Boot effect: scan + load existing tags + run auto-pass + pick cursor ─
+  //
+  // On first boot (no existing tags), we run the auto-tag pre-pass before
+  // entering the manual UI (SOP 12 § 4.5). If quit-and-resume — meaning at
+  // least one tag already exists — we skip the auto step entirely and the
+  // cursor lands on the first untagged image (which may have been left there
+  // by either the previous auto run or the previous manual session).
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -258,8 +274,51 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
         if (cancelled) return;
 
         const flattened = flattenAndSort(scan.byCategory);
-        const tagged = new Set<string>();
+        let tagged = new Set<string>();
         for (const t of existingTags) tagged.add(t.imagePath);
+
+        const isFreshLibrary = tagged.size === 0 && flattened.length > 0;
+        setAllImages(flattened);
+        setTaggedSet(tagged);
+        setIsLoading(false);
+
+        if (isFreshLibrary) {
+          // Auto phase — run before mounting the per-card UI.
+          setPhase('auto');
+          setAutoTotal(flattened.length);
+          setAutoDone(0);
+
+          const controller = new AbortController();
+          autoAbortRef.current = controller;
+          try {
+            await autoTagLibrary(flattened, {
+              signal: controller.signal,
+              onProgress: (done, total, current) => {
+                if (cancelled) return;
+                setAutoDone(done);
+                setAutoTotal(total);
+                setAutoCurrentName(current?.name ?? null);
+              },
+            });
+          } catch (err) {
+            // autoTagLibrary already swallows per-image errors; a throw here
+            // would be a programmer error. Log and fall through to manual.
+            console.error('[TaggingPass] autoTagLibrary failed', err);
+          }
+          autoAbortRef.current = null;
+          if (cancelled) return;
+
+          // Re-read after the auto pass to pick up everything it wrote.
+          try {
+            const refreshed = await listImageTags();
+            tagged = new Set<string>();
+            for (const t of refreshed) tagged.add(t.imagePath);
+          } catch (err) {
+            console.error('[TaggingPass] re-read after auto-tag failed', err);
+          }
+          if (cancelled) return;
+          setTaggedSet(tagged);
+        }
 
         const startIdx = firstUntaggedFrom(flattened, tagged, 0);
         // If startIdx === -1, every image has a tag already — we still mount
@@ -267,11 +326,8 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
         // at the last image (or 0 for an empty library).
         const initialCursor =
           startIdx === -1 ? Math.max(0, flattened.length - 1) : startIdx;
-
-        setAllImages(flattened);
-        setTaggedSet(tagged);
         setCursor(initialCursor);
-        setIsLoading(false);
+        setPhase('manual');
       } catch (err) {
         if (cancelled) return;
         const msg =
@@ -286,6 +342,7 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
     })();
     return () => {
       cancelled = true;
+      autoAbortRef.current?.abort();
     };
   }, []);
 
@@ -610,6 +667,75 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
           >
             המשך אל המסך הראשי
           </Button>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Auto phase ──────────────────────────────────────────────────────────
+  // Runs once on a fresh library before the manual UI mounts. Shows a
+  // progress card with the live counter and current filename.
+  if (phase === 'auto') {
+    const autoPct = autoTotal > 0 ? (autoDone / autoTotal) * 100 : 0;
+    return (
+      <main
+        data-testid="tagging-pass"
+        dir="rtl"
+        lang="he"
+        className="min-h-screen bg-ink text-cream flex items-center justify-center px-16"
+      >
+        <div className="w-full max-w-2xl text-center">
+          <p
+            className="text-label uppercase text-gold-dark mb-6 tracking-[0.12em]"
+            data-testid="tagging-auto-heading"
+          >
+            מתייג אוטומטית את ספריית התמונות
+          </p>
+          <p className="text-h3 font-serif text-cream mb-8">
+            <span dir="ltr" data-testid="tagging-auto-counter">
+              {autoDone} / {autoTotal}
+            </span>
+          </p>
+
+          <div
+            className="w-full border-b border-border-subtle relative mb-8"
+            role="progressbar"
+            aria-valuenow={autoDone}
+            aria-valuemin={0}
+            aria-valuemax={autoTotal}
+            aria-label="התקדמות תיוג אוטומטי"
+          >
+            <div
+              className="absolute top-0 h-px progress-shimmer-fill"
+              style={{
+                insetInlineStart: 0,
+                width: `${autoPct}%`,
+                transition: prefersReducedMotion
+                  ? 'none'
+                  : 'width 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+            />
+          </div>
+
+          {autoCurrentName && (
+            <p
+              className="text-small text-cream-muted truncate"
+              data-testid="tagging-auto-current"
+            >
+              {autoCurrentName}
+            </p>
+          )}
+
+          <div className="mt-12">
+            <button
+              type="button"
+              data-testid="tagging-auto-cancel"
+              onClick={() => autoAbortRef.current?.abort()}
+              className="font-sans text-label uppercase tracking-[0.12em] text-cream-muted transition-colors duration-150 hover:text-gold"
+            >
+              בטל ועבור לתיוג ידני
+            </button>
+          </div>
         </div>
       </main>
     );
