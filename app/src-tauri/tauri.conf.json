@@ -30,15 +30,17 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "C:/Users/sara/Desktop/שון בלאיש/אולם עיצוב בסיס 2026/**",
-          "C:/Users/sara/Desktop/שון בלאיש/חופות אולם גדול גאמוס/**",
-          "C:/Users/sara/Desktop/שון בלאיש/חופות ריזורט/**",
-          "C:/Users/sara/Desktop/שון בלאיש/חופות שידרוג/**",
-          "C:/Users/sara/Desktop/שון בלאיש/מפות מפיות/**",
-          "C:/Users/sara/Desktop/שון בלאיש/עיצובים שידרוג/**",
-          "C:/Users/sara/Desktop/שון בלאיש/ריזורט בסיס/**",
-          "C:/Users/sara/Desktop/שון בלאיש/כסא כלה בחוץ בסיס.jpg",
-          "C:/Users/sara/Desktop/שון בלאיש/כסא כלה בתוך האולם.jpg"
+          "$HOME/Desktop/שון בלאיש/**",
+          "$HOME/OneDrive/Desktop/שון בלאיש/**",
+          "$HOME/Documents/שון בלאיש/**",
+          "$HOME/OneDrive/Documents/שון בלאיש/**",
+          "$HOME/שון בלאיש/**",
+          "C:/שון בלאיש/**",
+          "D:/שון בלאיש/**",
+          "E:/שון בלאיש/**",
+          "F:/שון בלאיש/**",
+          "D:/משה פרוייקטים/שון בלאיש/**",
+          "F:/MyFiles/העסק שלי/שון בלאיש/**"
         ]
       }
     }

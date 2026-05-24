@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "image-library",
-  "description": "READ-ONLY access to the on-disk image library (7 category folders + 2 loose root JPGs). Enforces the 'MUST keep images in their existing folders' behavioral rule (claude.md #2). NEVER add a write permission to this file — that breaks the read-only invariant. Companion: capabilities/app-writable.json. SOP: architecture/08-tauri-filesystem.md § Path Scopes #1. Each category folder needs both the bare path (for readDir) and the /** glob (for file reads).",
+  "description": "READ-ONLY access to the on-disk image library (7 category folders + 2 loose root JPGs). Enforces the 'MUST keep images in their existing folders' behavioral rule (claude.md #2). NEVER add a write permission to this file — that breaks the read-only invariant. Companion: capabilities/app-writable.json. SOP: architecture/08-tauri-filesystem.md § Path Scopes #1. As of 2026-05-24, scope is widened from a single absolute path to multi-drive globs because the project root is now resolved at runtime by lib/config.ts (the original hardcoded scope would break on every machine that wasn't sara's laptop). The Tauri capability layer is no longer the primary security boundary for the image library — defense-in-depth at the lib layer (assertInsideRoot in tauri-fs.ts) enforces that every fs call stays inside the resolved root, regardless of how broad this glob list is. See claude.md Maintenance Log 2026-05-24 for the full trade-off rationale.",
   "windows": ["main"],
   "permissions": [
     "fs:allow-read-file",
@@ -11,22 +11,28 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/אולם עיצוב בסיס 2026" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/אולם עיצוב בסיס 2026/**" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/חופות אולם גדול גאמוס" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/חופות אולם גדול גאמוס/**" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/חופות ריזורט" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/חופות ריזורט/**" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/חופות שידרוג" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/חופות שידרוג/**" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/מפות מפיות" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/מפות מפיות/**" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/עיצובים שידרוג" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/עיצובים שידרוג/**" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/ריזורט בסיס" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/ריזורט בסיס/**" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/כסא כלה בחוץ בסיס.jpg" },
-        { "path": "C:/Users/sara/Desktop/שון בלאיש/כסא כלה בתוך האולם.jpg" }
+        { "path": "$HOME/Desktop/שון בלאיש" },
+        { "path": "$HOME/Desktop/שון בלאיש/**" },
+        { "path": "$HOME/OneDrive/Desktop/שון בלאיש" },
+        { "path": "$HOME/OneDrive/Desktop/שון בלאיש/**" },
+        { "path": "$HOME/Documents/שון בלאיש" },
+        { "path": "$HOME/Documents/שון בלאיש/**" },
+        { "path": "$HOME/OneDrive/Documents/שון בלאיש" },
+        { "path": "$HOME/OneDrive/Documents/שון בלאיש/**" },
+        { "path": "$HOME/שון בלאיש" },
+        { "path": "$HOME/שון בלאיש/**" },
+        { "path": "C:/שון בלאיש" },
+        { "path": "C:/שון בלאיש/**" },
+        { "path": "D:/שון בלאיש" },
+        { "path": "D:/שון בלאיש/**" },
+        { "path": "E:/שון בלאיש" },
+        { "path": "E:/שון בלאיש/**" },
+        { "path": "F:/שון בלאיש" },
+        { "path": "F:/שון בלאיש/**" },
+        { "path": "D:/משה פרוייקטים/שון בלאיש" },
+        { "path": "D:/משה פרוייקטים/שון בלאיש/**" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/**" }
       ]
     }
   ]

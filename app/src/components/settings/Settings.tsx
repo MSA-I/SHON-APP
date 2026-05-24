@@ -21,7 +21,7 @@
 // retired in favor of the single app-wide <ToastProvider> mounted in App.tsx.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, Download, Moon, Sun, TriangleAlert, Upload } from 'lucide-react';
+import { Check, Copy, Download, Files, Moon, RefreshCw, Sun, TriangleAlert, Upload } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 import { useTheme } from '../../contexts/ThemeContext';
@@ -31,6 +31,8 @@ import * as db from '../../lib/db';
 import { getBackupsDir } from '../../lib/paths';
 import { Stagger } from '../../lib/motion/Stagger';
 import { useEntrance } from '../../lib/motion/useEntrance';
+import { DuplicatesReport } from './DuplicatesReport';
+import { tauriFsExtras } from '../../lib/tauri-fs';
 
 // =============================================================================
 // Component
@@ -47,6 +49,9 @@ export function Settings() {
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isDuplicatesOpen, setIsDuplicatesOpen] = useState(false);
+  const [isRetagModalOpen, setIsRetagModalOpen] = useState(false);
+  const [isRetagging, setIsRetagging] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -190,6 +195,75 @@ export function Settings() {
     }
   }, [backupsDir, toast]);
 
+  // ── Retag entire library (SOP 12 reset) ──────────────────────────────────
+
+  const handleRetagClick = useCallback(() => {
+    if (isRetagging) return;
+    setIsRetagModalOpen(true);
+  }, [isRetagging]);
+
+  const handleRetagConfirm = useCallback(async () => {
+    if (isRetagging) return;
+    setIsRetagModalOpen(false);
+    setIsRetagging(true);
+    try {
+      // Step 1-2: export current imageTags to a timestamped backup file.
+      const tags = await db.listImageTags();
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-')
+        .slice(0, 19);
+      const backupFilename = `imageTags-backup-${timestamp}.json`;
+      const backupPath = `${backupsDir}/${backupFilename}`;
+      const envelope = {
+        exportedAt: Date.now(),
+        imageTags: tags,
+      };
+      try {
+        await tauriFsExtras.writeTextFile(backupPath, JSON.stringify(envelope, null, 2));
+      } catch (backupErr) {
+        console.error('[settings] retag: backup write failed', backupErr);
+        toast({ kind: 'error', message: 'יצירת הגיבוי נכשלה — התייג מחדש בוטל' });
+        return; // Abort before clearing.
+      }
+
+      // Step 3: clear all imageTags.
+      try {
+        await db.clearImageTags();
+      } catch (clearErr) {
+        console.error('[settings] retag: clearImageTags failed', clearErr);
+        toast({ kind: 'error', message: 'מחיקת התיוגים הקיימים נכשלה' });
+        return;
+      }
+
+      // Step 4: set taggingComplete = false so the boot sequence re-opens the pass.
+      try {
+        await db.setMeta('taggingComplete', false);
+      } catch (metaErr) {
+        console.error('[settings] retag: setMeta failed', metaErr);
+        toast({ kind: 'error', message: 'איפוס הסטטוס נכשל' });
+        return;
+      }
+
+      // Step 5: success toast.
+      toast({ kind: 'success', message: 'הספרייה אופסה. מתחיל תיוג מחדש...' });
+
+      // Step 6: reload (boot sequence will see taggingComplete=false and open the pass).
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 1200);
+    } catch (err) {
+      console.error('[settings] retag failed', err);
+      toast({ kind: 'error', message: 'התייג מחדש נכשל' });
+    } finally {
+      setIsRetagging(false);
+    }
+  }, [isRetagging, backupsDir, toast]);
+
+  const handleRetagCancel = useCallback(() => {
+    setIsRetagModalOpen(false);
+  }, []);
+
   // ===========================================================================
   // Render
   // ===========================================================================
@@ -256,6 +330,23 @@ export function Settings() {
                 style={{ display: 'none' }}
                 data-testid="settings-import-input"
               />
+
+              <PrimaryButton
+                onClick={() => setIsDuplicatesOpen(true)}
+                icon={<Files size={16} strokeWidth={1.5} />}
+                testId="settings-find-duplicates"
+              >
+                מצא תמונות כפולות
+              </PrimaryButton>
+
+              <PrimaryButton
+                onClick={handleRetagClick}
+                disabled={isRetagging}
+                icon={<RefreshCw size={16} strokeWidth={1.5} />}
+                testId="settings-retag"
+              >
+                {isRetagging ? 'מאפס…' : 'תייג מחדש את כל הספרייה'}
+              </PrimaryButton>
             </div>
 
             <div>
@@ -347,6 +438,17 @@ export function Settings() {
         </Section>
         </Stagger>
       </div>
+
+      {isDuplicatesOpen && (
+        <DuplicatesReport onClose={() => setIsDuplicatesOpen(false)} />
+      )}
+
+      {isRetagModalOpen && (
+        <RetagConfirmModal
+          onConfirm={handleRetagConfirm}
+          onCancel={handleRetagCancel}
+        />
+      )}
     </main>
   );
 }
@@ -550,6 +652,93 @@ function ThemeChip({
       </span>
       <span>{label}</span>
     </button>
+  );
+}
+
+// =============================================================================
+// Retag Confirm Modal
+// =============================================================================
+//
+// Simple centered overlay modal for the "תייג מחדש את כל הספרייה" confirmation
+// flow. Uses the same Luxury Editorial palette + inline styling as the rest of
+// Settings.tsx (no extra primitive dep). Inline modal state kept in Settings;
+// this is a presentational child.
+
+function RetagConfirmModal({
+  onConfirm,
+  onCancel,
+}: {
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      data-testid="retag-modal"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="retag-modal-title"
+      dir="rtl"
+      lang="he"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+        className="
+          relative w-full max-w-md
+          bg-ink-raised border border-border-subtle
+          px-8 py-8
+        "
+        style={{ borderRadius: 2 }}
+      >
+        <h2
+          id="retag-modal-title"
+          className="font-serif text-h2 mb-6"
+        >
+          תייג מחדש את כל הספרייה
+        </h2>
+        <p className="text-body text-cream-muted leading-relaxed mb-8">
+          <span className="text-danger font-bold">אזהרה:</span> פעולה זו תמחק
+          את כל התיוגים הקיימים ותפתח מחדש את שלב התיוג. גיבוי אוטומטי של
+          התיוגים הנוכחיים יישמר לפני המחיקה.
+        </p>
+
+        <div className="flex gap-4 justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            data-testid="retag-modal-cancel"
+            className="
+              px-6 py-3
+              text-body text-cream-muted
+              border border-border-subtle
+              transition-colors duration-150
+              hover:border-gold hover:text-cream
+            "
+            style={{ borderRadius: 2 }}
+          >
+            ביטול
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            data-testid="retag-modal-confirm"
+            className="
+              px-6 py-3
+              text-body text-cream
+              bg-ink-raised border border-border-subtle
+              transition-colors duration-150
+              hover:border-gold hover:text-gold-dark
+            "
+            style={{ borderRadius: 2 }}
+          >
+            המשך
+          </button>
+        </div>
+      </motion.div>
+    </div>
   );
 }
 

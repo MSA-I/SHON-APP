@@ -18,7 +18,7 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 
-export type BootPhase = "opening-db" | "reading-meta" | "ready";
+export type BootPhase = "opening-db" | "reading-meta" | "discovering-root" | "ready";
 
 export type BootSplashProps = {
   /** Optional phase label rendered below the wordmark. */
@@ -30,6 +30,7 @@ export type BootSplashProps = {
 const PHASE_LABEL: Record<BootPhase, string> = {
   "opening-db": "טוען מסד נתונים",
   "reading-meta": "מאתר העדפות",
+  "discovering-root": "מאתר את ספריית התמונות",
   ready: "מוכן",
 };
 

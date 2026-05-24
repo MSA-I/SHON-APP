@@ -16,7 +16,33 @@
     {
       "identifier": "opener:allow-reveal-item-in-dir",
       "allow": [
+        { "path": "$HOME/Desktop/שון בלאיש/events/**" },
+        { "path": "$HOME/OneDrive/Desktop/שון בלאיש/events/**" },
+        { "path": "$HOME/Documents/שון בלאיש/events/**" },
+        { "path": "$HOME/OneDrive/Documents/שון בלאיש/events/**" },
+        { "path": "$HOME/שון בלאיש/events/**" },
+        { "path": "C:/שון בלאיש/events/**" },
+        { "path": "D:/שון בלאיש/events/**" },
+        { "path": "E:/שון בלאיש/events/**" },
+        { "path": "F:/שון בלאיש/events/**" },
+        { "path": "D:/משה פרוייקטים/שון בלאיש/events/**" },
         { "path": "F:/MyFiles/העסק שלי/שון בלאיש/events/**" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$HOME/Desktop/שון בלאיש/events/**/*.docx" },
+        { "path": "$HOME/OneDrive/Desktop/שון בלאיש/events/**/*.docx" },
+        { "path": "$HOME/Documents/שון בלאיש/events/**/*.docx" },
+        { "path": "$HOME/OneDrive/Documents/שון בלאיש/events/**/*.docx" },
+        { "path": "$HOME/שון בלאיש/events/**/*.docx" },
+        { "path": "C:/שון בלאיש/events/**/*.docx" },
+        { "path": "D:/שון בלאיש/events/**/*.docx" },
+        { "path": "E:/שון בלאיש/events/**/*.docx" },
+        { "path": "F:/שון בלאיש/events/**/*.docx" },
+        { "path": "D:/משה פרוייקטים/שון בלאיש/events/**/*.docx" },
+        { "path": "F:/MyFiles/העסק שלי/שון בלאיש/events/**/*.docx" }
       ]
     }
   ]
