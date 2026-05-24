@@ -24,6 +24,8 @@ import { useToast } from '../../contexts/ToastContext';
 import { listImageTags } from '../../lib/db';
 import { getOrBakeThumbnail, scanAll } from '../../lib/images';
 import { autoTagLibrary } from '../../lib/auto-tag';
+import { CATEGORY_SCHEMA, allowedLabelsFor } from '../../lib/category-schema';
+import { findDuplicates } from '../../lib/dedup';
 import {
   IMAGE_CATEGORIES,
   type ImageCategory,
@@ -35,7 +37,6 @@ import {
 import { Button } from '../ui/Button';
 import { CategoryTabs } from './CategoryTabs';
 import { Lightbox } from './Lightbox';
-import { SubCategoryTabs } from './SubCategoryTabs';
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -102,20 +103,25 @@ function matchesQuery(name: string, query: string): boolean {
   return a.includes(b);
 }
 
-/** Maximum number of sub-category chips to render (excluding "הכל"). */
-const MAX_SUBCATEGORIES = 8;
+export type SubCatGroup = {
+  dimension: string;
+  chips: { label: string; count: number }[];
+};
 
 /**
- * Build the top-N sub-categories for an active main category from the union
- * of `customLabels` across the tags of every image in that category. Sorted
- * by descending count (ties broken by Hebrew locale compare). Returns the
- * raw list — the "הכל" chip is prepended by the caller.
+ * Build dimension-grouped sub-categories for the active category using the
+ * canonical CATEGORY_SCHEMA. Each dimension is a group; chips inside are
+ * sorted by descending count.
+ *
+ * Maintenance Log 2026-05-24: chips with count=0 are now DROPPED (not greyed
+ * out). If ALL chips in a dimension are zero-count, the entire dimension is
+ * omitted — the user only sees dimensions with at least one selectable chip.
  */
 function deriveSubCategories(
+  category: ImageCategory,
   imagesInCategory: readonly ImageMetadata[],
   tagsByPath: ReadonlyMap<string, ImageTag>,
-  limit: number,
-): { labels: string[]; counts: Record<string, number> } {
+): SubCatGroup[] {
   const counts = new Map<string, number>();
   for (const img of imagesInCategory) {
     const tag = tagsByPath.get(img.path);
@@ -126,16 +132,22 @@ function deriveSubCategories(
       counts.set(label, (counts.get(label) ?? 0) + 1);
     }
   }
-  const ranked = Array.from(counts.entries())
-    .sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      return a[0].localeCompare(b[0], 'he');
-    })
-    .slice(0, limit);
-  const labels = ranked.map(([label]) => label);
-  const countsOut: Record<string, number> = {};
-  for (const [label, count] of counts) countsOut[label] = count;
-  return { labels, counts: countsOut };
+
+  const schema = CATEGORY_SCHEMA[category];
+  const groups: SubCatGroup[] = [];
+  for (const dim of schema.dimensions) {
+    const chips = dim.values
+      .map((label) => ({ label, count: counts.get(label) ?? 0 }))
+      .filter((chip) => chip.count > 0) // drop zero-count chips
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.label.localeCompare(b.label, 'he');
+      });
+    // If no chips survived the filter, skip the entire dimension.
+    if (chips.length === 0) continue;
+    groups.push({ dimension: dim.name, chips });
+  }
+  return groups;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +179,11 @@ export function Gallery({
     () => new Map(),
   );
 
+  // Dedup state (populated in the background after scan completes).
+  const [hiddenDuplicates, setHiddenDuplicates] = useState<Set<string>>(
+    () => new Set(),
+  );
+
   // Filters
   const [activeCategory, setActiveCategory] = useState<ImageCategory>(
     () => DEFAULT_CATEGORY[mode],
@@ -187,6 +204,14 @@ export function Gallery({
   // After the scan, if there are no imageTags in IDB yet (user pressed
   // "דלג זמנית" during the tagging pass), we run a fast name-only auto-tag
   // pass so the sub-category strip is populated.
+  //
+  // Maintenance Log 2026-05-24: added schema resync + background dedup.
+  //   1. Schema resync (auto) — images whose existing tags contain NO
+  //      schema-conformant labels are re-auto-tagged so dimension chips
+  //      actually have counts. Idempotent; tags already conformant skip.
+  //   2. Dedup (background) — after scan completes, findDuplicates runs in
+  //      the background (non-blocking). Duplicates are filtered from the
+  //      visible grid via hiddenDuplicates Set. No manual gate — always on.
   // -----------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
@@ -232,10 +257,74 @@ export function Gallery({
         if (cancelled) return;
         const map = new Map<string, ImageTag>();
         for (const t of tags) map.set(t.imagePath, t);
-        setTagsByPath(map);
 
+        // Schema resync — tags written by older auto-tag runs may contain
+        // customLabels that don't match the current CATEGORY_SCHEMA. Re-run
+        // autoTagLibrary() over images whose tags fail to produce ANY
+        // schema-conformant labels, so the dimension chips actually have
+        // counts. This is idempotent: tags already conformant pass through.
+        const needsResync: ImageMetadata[] = [];
+        for (const img of allImages) {
+          const existing = map.get(img.path);
+          if (!existing) {
+            needsResync.push(img);
+            continue;
+          }
+          const allowed = allowedLabelsFor(img.category);
+          const hasConformant = existing.customLabels.some((l) =>
+            allowed.has(l),
+          );
+          if (!hasConformant) needsResync.push(img);
+        }
+        if (needsResync.length > 0) {
+          try {
+            await autoTagLibrary(needsResync, { nameOnly: false });
+          } catch (err) {
+            console.error('[gallery] schema-resync failed', err);
+          }
+          if (cancelled) return;
+          try {
+            const refreshed = await listImageTags();
+            map.clear();
+            for (const t of refreshed) map.set(t.imagePath, t);
+          } catch (err) {
+            console.error(
+              '[gallery] post-resync listImageTags failed',
+              err,
+            );
+          }
+        }
+
+        setTagsByPath(map);
         setByCategory(new Map(scanResult.byCategory));
         setScanComplete(true);
+
+        // Background dedup — runs after scan completes. Non-blocking.
+        // Populates hiddenDuplicates Set so the grid filters out duplicate
+        // images automatically. Failures are non-fatal (logged only).
+        if (!cancelled && allImages.length > 0) {
+          void (async () => {
+            try {
+              const clusters = await findDuplicates(
+                allImages,
+                (img) => getOrBakeThumbnail(img),
+                {
+                  signal: undefined, // no user-facing abort; runs to completion
+                  onProgress: undefined,
+                },
+              );
+              if (cancelled) return;
+              const hidden = new Set<string>();
+              for (const cluster of clusters) {
+                // Hide all but the canonical (first) image in each cluster.
+                for (const dup of cluster.duplicates) hidden.add(dup.path);
+              }
+              setHiddenDuplicates(hidden);
+            } catch (err) {
+              console.error('[gallery] background dedup failed', err);
+            }
+          })();
+        }
       } catch (err) {
         console.error('[gallery] scanAll failed', err);
         if (!cancelled) setScanComplete(true);
@@ -274,20 +363,14 @@ export function Gallery({
   }, [activeKind, hasVideosInActiveCategory]);
 
   // -----------------------------------------------------------------------
-  // Sub-category options derived from imageTags for the active main category.
-  // Re-derived on category, kind, or tag map change. Hidden when fewer than 2
-  // distinct labels exist (the strip is information-dense; one chip is noise).
+  // Sub-category groups derived from CATEGORY_SCHEMA for the active main
+  // category. Re-derived on category, kind, or tag map change.
   // -----------------------------------------------------------------------
-  const { subCategoryOptions, subCategoryCounts } = useMemo(() => {
+  const subCategoryGroups = useMemo(() => {
     const list = (byCategory.get(activeCategory) ?? []).filter(
       (img) => img.kind === activeKind,
     );
-    const { labels, counts } = deriveSubCategories(
-      list,
-      tagsByPath,
-      MAX_SUBCATEGORIES,
-    );
-    return { subCategoryOptions: labels, subCategoryCounts: counts };
+    return deriveSubCategories(activeCategory, list, tagsByPath);
   }, [byCategory, activeCategory, activeKind, tagsByPath]);
 
   // Reset sub-filter when the user changes main category or media kind, since
@@ -297,17 +380,19 @@ export function Gallery({
   }, [activeCategory, activeKind]);
 
   // Drop a stale sub-selection if the option vanished (e.g. tag map updated).
+  const allSubLabels = useMemo(() => {
+    return subCategoryGroups.flatMap((g) => g.chips.map((c) => c.label));
+  }, [subCategoryGroups]);
+
   useEffect(() => {
-    if (
-      activeSubCategory !== null &&
-      !subCategoryOptions.includes(activeSubCategory)
-    ) {
+    if (activeSubCategory !== null && !allSubLabels.includes(activeSubCategory)) {
       setActiveSubCategory(null);
     }
-  }, [activeSubCategory, subCategoryOptions]);
+  }, [activeSubCategory, allSubLabels]);
 
   // -----------------------------------------------------------------------
   // Visible images = active category × active kind × search query × sub-cat
+  // × dedup (Maintenance Log 2026-05-24: hide duplicates from the grid).
   // -----------------------------------------------------------------------
   const visibleImages = useMemo<ImageMetadata[]>(() => {
     const list = byCategory.get(activeCategory) ?? [];
@@ -319,6 +404,8 @@ export function Gallery({
         if (!tag) return false;
         if (!tag.customLabels.includes(activeSubCategory)) return false;
       }
+      // Hide duplicates (non-canonical images) from the grid.
+      if (hiddenDuplicates.has(img.path)) return false;
       return true;
     });
   }, [
@@ -328,6 +415,7 @@ export function Gallery({
     query,
     activeSubCategory,
     tagsByPath,
+    hiddenDuplicates,
   ]);
 
   // -----------------------------------------------------------------------
@@ -458,21 +546,71 @@ export function Gallery({
       </header>
 
       {/* ───── Category chip strip ─────────────────────────────────────── */}
-      <div className="px-16">
+      {/* Maintenance Log 2026-05-24: removed `px-16` wrapper that clipped the
+          horizontal scroller in <CategoryTabs>. The chip-strip's <nav> owns
+          its own padding (px-16 + scroll-px-16) so the first/last chips are
+          fully reachable on narrow viewports. */}
+      <div>
         <CategoryTabs
           active={activeCategory}
           onChange={setActiveCategory}
           counts={counts}
         />
-        {/* Sub-category strip — derived from imageTags. Hidden when there are
-            fewer than 2 distinct labels for the active main category. */}
-        {subCategoryOptions.length >= 2 ? (
-          <SubCategoryTabs
-            options={[SubCategoryTabs.ALL_LABEL, ...subCategoryOptions]}
-            active={activeSubCategory}
-            onChange={setActiveSubCategory}
-            counts={subCategoryCounts}
-          />
+        {/* Sub-category strip — dimension-grouped per CATEGORY_SCHEMA. Hidden
+            when the category has no dimensions or all groups are empty. */}
+        {subCategoryGroups.length > 0 &&
+        subCategoryGroups.some((g) => g.chips.length > 0) ? (
+          <div className="flex flex-col gap-6 border-t border-border-subtle bg-ink pt-6">
+            {/* הכל reset chip */}
+            <button
+              type="button"
+              onClick={() => setActiveSubCategory(null)}
+              className={
+                'self-start border px-4 py-2 text-small transition-colors duration-150 ' +
+                (activeSubCategory === null
+                  ? 'border-gold text-gold-dark'
+                  : 'border-border-subtle text-cream hover:border-gold')
+              }
+            >
+              הכל
+            </button>
+
+            {/* Dimension groups */}
+            {subCategoryGroups.map((group) =>
+              group.chips.length === 0 ? null : (
+                <div key={group.dimension} className="flex flex-col gap-3">
+                  <div className="text-label uppercase text-gold-dark tracking-[0.12em]">
+                    {group.dimension}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {group.chips.map((chip) => {
+                      const active = activeSubCategory === chip.label;
+                      return (
+                        <button
+                          key={chip.label}
+                          type="button"
+                          onClick={() =>
+                            setActiveSubCategory(active ? null : chip.label)
+                          }
+                          className={
+                            'border px-3 py-2 text-small transition-colors duration-150 ' +
+                            (active
+                              ? 'border-gold text-gold-dark'
+                              : 'border-border-subtle text-cream hover:border-gold')
+                          }
+                        >
+                          {chip.label}
+                          <span className="mr-2 text-cream-muted">
+                            ({chip.count})
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ),
+            )}
+          </div>
         ) : null}
       </div>
 

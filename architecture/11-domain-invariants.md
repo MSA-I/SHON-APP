@@ -86,19 +86,18 @@ Two coupled constraints:
 - Unit test: `updateEvent(id, { date: '2026-06-15' })` (no `dayOfWeek`) → stored `dayOfWeek === 'שני'`.
 - UI audit: confirm `dayOfWeek` is rendered as text/badge, never as a control.
 
-## §4. `napkins.color === 'אחר'` requires a free-text witness
+## §4. `napkins.color === 'אחר'` requires a free-text witness — **RETIRED 2026-05-24**
 
-**ID:** `INV-04`
-**Statement:** When the user picks `'אחר'` (Other) for napkin color, the code must require a non-empty free-text description. The witness lives either in `napkins.foldType` (preferred — same block) or in `Event.notes` (fallback). An empty `'אחר'` produces a DOCX line that says "צבע: אחר" with no detail — useless to a venue ordering napkins.
+**ID:** `INV-04` (RETIRED)
+**Statement:** ~~When the user picks `'אחר'` (Other) for napkin color, the code must require a non-empty free-text description. The witness lives either in `napkins.foldType` (preferred — same block) or in `Event.notes` (fallback). An empty `'אחר'` produces a DOCX line that says "צבע: אחר" with no detail — useless to a venue ordering napkins.~~
+
+**RETIREMENT NOTE:** The color picker was removed from `NapkinsTab` on 2026-05-24 after the introduction of sub-category dimensions in the gallery (see Maintenance Log entry). Napkin color is now derived from `designSelections` + `imageTags` (dimension "צבע" with 18 palette values from `CATEGORY_SCHEMA['מפות מפיות']`). The `napkins.color` schema field is retained as optional for backward compatibility with old backups but is no longer written by the UI or rendered in the DOCX. This invariant is retired and no longer enforced.
+
 **Source:** `claude.md § Event` (`napkins.color: 'וורד עתיק' | 'פשתן' | 'אחר'`) + SOP 10 §4 (definition of `'אחר'` as "escape hatch with required free-text").
-**Constrained fields:** `Event.napkins.color`, `Event.napkins.foldType`, `Event.notes`
-**Enforcement layer:**
-- **UI** — primary. NapkinsTab: when `color === 'אחר'`, surface a required text input labeled "פירוט צבע" that writes back into `napkins.foldType` (or into `Event.notes` with a prefix `[צבע מותאם]`). The "המשך" button is disabled while this field is empty.
-- **`db.ts updateEvent` validator** — soft-warn (not reject — allow legacy import). On write, if `napkins.color === 'אחר' && !napkins.foldType.trim() && !notes.trim()`, emit a `console.warn` tagged `INV-04`. Not a hard block (would break backup-restore of legacy data).
-**Violation symptom:** DOCX shows "צבע: אחר" with a blank fabric and a blank fold — Shon has to call the couple back to ask what they meant.
-**Test / check (#18):**
-- UI audit: confirm the conditional required input exists in `NapkinsTab`.
-- Grep `app/src/lib/db.ts` for the `INV-04` warn tag.
+**Constrained fields:** `Event.napkins.color` (deprecated), `Event.napkins.foldType`, `Event.notes`
+**Enforcement layer:** None (retired).
+**Violation symptom:** N/A (retired).
+**Test / check (#18):** N/A (retired).
 
 ## §5. `tableDesignSelections[i].imagePath` must reference a known `ImageCategory`
 
@@ -236,7 +235,7 @@ Two coupled constraints:
 | INV-01 | tableDesignSelections ≤ 5 | — | ✓ | ✓ | ✓ | `tableDesignSelections.length` in db.ts |
 | INV-02 | signature ⇄ status state machine | — | ✓ | ✓ | — | three rejection branches in db.ts updateEvent |
 | INV-03 | dayOfWeek = derive(date) | — | ✓ | — | ✓ | `deriveDayOfWeek` call in db.ts |
-| INV-04 | napkins.color === 'אחר' needs witness | — | warn | — | ✓ | NapkinsTab conditional input + `INV-04` warn tag |
+| INV-04 | ~~napkins.color === 'אחר' needs witness~~ (RETIRED) | — | — | — | — | N/A (retired 2026-05-24) |
 | INV-05 | selection.category ∈ IMAGE_CATEGORIES | partial | ✓ | — | — | `IMAGE_CATEGORIES.includes` in backup.ts importBackup |
 | INV-06 | IMAGE_CATEGORIES exhaustive over ImageCategory | ✓ | — | — | — | `_AssertImageCategoriesExhaustive` in types/index.ts |
 | INV-07 | image source files read-only | — | via paths.ts | — | — | `assertInsideRoot` in tauri-fs.ts |
@@ -256,6 +255,7 @@ Two coupled constraints:
 | 2026-05-20 | INV-12 (`selectedAt`/`signedAt` lib-owned): db.ts re-stamps via `Date.now()` in createEvent/updateEvent regardless of caller-supplied values. `putImageTag` likewise re-stamps `taggedAt`. EventContext mirrors this — the UI layer never has to think about timestamps. | Phase 3A close. |
 | 2026-05-20 | F1 finding from #18 (`_AssertImageCategoriesExhaustive` missing in `types/index.ts`) — without it, a future PR adding a 9th `ImageCategory` literal without growing `IMAGE_CATEGORIES` slips silently past `tsc`. | Land the canonical 6-line pattern from SOP 11 §6 after `IMAGE_CATEGORIES`. Marked W-3 in the #19 review backlog. |
 | 2026-05-21 | Phase 4: 121/121 tests cover the lib-layer enforcement of every INV-* (clients/events CRUD, deleteClient cascade, `'completed'` rejection, `'signed'` w/o signature rejection, INV-01 `>5`, INV-05 unknown category, INV-04 napkins.color='אחר' soft warn, etc.). Component-layer + canonical 13-step E2E tests are the next coverage target. | Refinement-pass entry; tracked in `task_plan.md` Phase 4 § Tests. |
+| 2026-05-24 | INV-04 RETIRED after removal of the napkins color picker from `NapkinsTab`. The color is now derived from the `designSelections` gallery choices + `imageTags` (sub-category dimension "צבע" with 18 palette values). `napkins.color` schema field is optional for backward compatibility but no longer written or validated. `db.ts.warnNapkinsAcher` converted to no-op. DOCX output (already updated by Team G) omits the "צבע" row. | Team H task: remove redundant color picker. |
 
 ## Verification
 

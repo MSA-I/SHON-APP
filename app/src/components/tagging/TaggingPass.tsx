@@ -35,8 +35,8 @@ import {
 import { bakeThumbnailsBatch, scanAll, toImageSrc } from '../../lib/images';
 import { autoTagLibrary } from '../../lib/auto-tag';
 import { exportBackup } from '../../lib/backup';
+import { CATEGORY_SCHEMA } from '../../lib/category-schema';
 import {
-  IMAGE_CATEGORIES,
   LibError,
   type ImageCategory,
   type ImageMetadata,
@@ -875,49 +875,48 @@ export function TaggingPass({ onComplete, onProgress }: TaggingPassProps) {
           onSubmit={handleSaveAndNext}
           className="grid grid-cols-1 md:grid-cols-2 gap-12"
         >
-          {/* Left column: categories + custom-tag chips */}
+          {/* Left column: dimension-grouped chips per CATEGORY_SCHEMA */}
           <fieldset className="min-w-0">
             <legend className="text-label uppercase text-gold-dark mb-6 block tracking-[0.12em]">
-              קטגוריה
+              תוויות לפי מאפיינים
             </legend>
-            <div className="grid grid-cols-2 gap-2 mb-8">
-              {IMAGE_CATEGORIES.map((cat) => {
-                const checked = userCategory === cat;
-                return (
-                  <label
-                    key={cat}
-                    className="cursor-pointer"
-                    data-testid={`tagging-category-${cat}`}
-                  >
-                    <input
-                      type="radio"
-                      name="userCategory"
-                      value={cat}
-                      checked={checked}
-                      onChange={() =>
-                        setUserCategory(
-                          // Toggle off if clicking the already-checked option.
-                          checked ? undefined : cat,
-                        )
-                      }
-                      className="sr-only peer"
-                    />
-                    <div
-                      className={
-                        'border px-3 py-3 text-center text-small transition-colors duration-150 ease-[cubic-bezier(0.4,0,0.2,1)] ' +
-                        (checked
-                          ? 'border-gold text-gold-dark'
-                          : 'border-border-subtle text-cream hover:border-gold')
-                      }
-                    >
-                      {cat}
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
 
-            {/* Custom-tag chip input ("אחר") */}
+            {currentImage &&
+              CATEGORY_SCHEMA[currentImage.category].dimensions.map((dim) => (
+                <div key={dim.name} className="mb-8">
+                  <div className="text-label uppercase text-gold-dark mb-3 tracking-[0.12em]">
+                    {dim.name}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {dim.values.map((val) => {
+                      const checked = customLabels.includes(val);
+                      return (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => {
+                            setCustomLabels((prev) =>
+                              checked
+                                ? prev.filter((l) => l !== val)
+                                : [...prev, val],
+                            );
+                          }}
+                          className={
+                            'border px-3 py-2 text-small transition-colors duration-150 ' +
+                            (checked
+                              ? 'border-gold text-gold-dark'
+                              : 'border-border-subtle text-cream hover:border-gold')
+                          }
+                        >
+                          {val}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+            {/* Free-text custom labels — optional "אחר" field */}
             <div>
               <label
                 htmlFor="custom-tag-input"

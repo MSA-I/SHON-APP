@@ -127,11 +127,55 @@ export type EventLocation = 'גאמוס' | 'ריזורט' | (string & {});
 export type NapkinColor = 'וורד עתיק' | 'פשתן' | 'אחר' | (string & {});
 export type NapkinFabric = 'פניה' | 'סטן' | (string & {});
 
+/**
+ * Canonical napkin fold types. Maintenance Log 2026-05-24 — replaces the
+ * free-text `Napkins.foldType` input with a 5-chip RadioChip group + an
+ * "אחר" escape that re-opens a free-text field. The string in `foldType`
+ * remains the single source of truth for downstream consumers (DOCX,
+ * backups). `foldKind` is a UI-side enum that mirrors the chip choice and
+ * is OPTIONAL on read so v1 events / older backups keep working.
+ */
+export type FoldType =
+  | 'קיפול ישר'
+  | 'קיפול מאוזן'
+  | 'קיפול עומד'
+  | 'קיפול גביע'
+  | 'קיפול מניפה'
+  | 'אחר';
+
+export const FOLD_TYPES: readonly FoldType[] = [
+  'קיפול ישר',
+  'קיפול מאוזן',
+  'קיפול עומד',
+  'קיפול גביע',
+  'קיפול מניפה',
+  'אחר',
+] as const;
+
+// Exhaustiveness assertion for FoldType vs FOLD_TYPES (mirrors INV-06 pattern).
+type _AssertFoldTypesExhaustive =
+  Exclude<FoldType, (typeof FOLD_TYPES)[number]> extends never
+    ? Exclude<(typeof FOLD_TYPES)[number], FoldType> extends never
+      ? true
+      : never
+    : never;
+const _foldTypesExhaustive: _AssertFoldTypesExhaustive = true;
+void _foldTypesExhaustive;
+
 export type Napkins = {
-  color: NapkinColor;
+  /** Optional for backward compatibility. Deprecated 2026-05-24 in favor of designSelections + image tags. */
+  color?: string;
   fabric: NapkinFabric;
   /** Free-text */
   foldType: string;
+  /**
+   * Canonical fold kind. Optional for back-compat with backups that pre-date
+   * the chip group (only `foldType: string` was written). When present, the
+   * UI keeps `foldKind` and `foldType` in sync (`foldKind === 'אחר'` means
+   * `foldType` carries the user's free-text witness).
+   * Maintenance Log 2026-05-24 — switch from free-text to RadioChip group.
+   */
+  foldKind?: FoldType;
   /**
    * Optional gallery selections for napkin/linen inspirations.
    * Added 2026-05-21 (Maintenance Log) to give every event tab a gallery

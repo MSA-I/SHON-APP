@@ -19,12 +19,13 @@ import { useState, type ReactNode } from 'react';
 import { Plus, X } from 'lucide-react';
 
 import { useEvent } from '../../contexts/EventContext';
-import type {
-  Event,
-  ImageSelection,
-  Napkins,
-  NapkinColor,
-  NapkinFabric,
+import {
+  FOLD_TYPES,
+  type Event,
+  type FoldType,
+  type ImageSelection,
+  type Napkins,
+  type NapkinFabric,
 } from '../../types';
 
 import { ChipLabel, RadioChip, SectionHeader } from './EventDetailsTab';
@@ -32,13 +33,22 @@ import { Gallery } from '../gallery/Gallery';
 import { TagsDisplay } from './TagsDisplay';
 import { SelectionThumbnail } from './SelectionThumbnail';
 
-const NAPKIN_COLORS: readonly NapkinColor[] = [
-  'וורד עתיק',
-  'פשתן',
-  'אחר',
-] as const;
-
 const NAPKIN_FABRICS: readonly NapkinFabric[] = ['פניה', 'סטן'] as const;
+
+/**
+ * Maintenance Log 2026-05-24: derive the RadioChip selection from persisted
+ * state. If `foldKind` is present we trust it (new-style writes). Otherwise
+ * we infer from `foldType`: an exact match against the canonical 5 picks
+ * that chip; any non-empty free-text falls back to "אחר"; an empty string
+ * picks nothing (so the user can choose deliberately on first edit).
+ */
+function deriveFoldKind(napkins: Napkins): FoldType | null {
+  if (napkins.foldKind) return napkins.foldKind;
+  const text = napkins.foldType?.trim() ?? '';
+  if (!text) return null;
+  if ((FOLD_TYPES as readonly string[]).includes(text)) return text as FoldType;
+  return 'אחר';
+}
 
 export function NapkinsTab(): ReactNode {
   const ctx = useEvent();
@@ -86,10 +96,32 @@ export function NapkinsTab(): ReactNode {
     });
   }
 
-  const isOther = ev.napkins.color === 'אחר';
-  // INV-04 witness check — used as an a11y/visual hint. Not a hard block here;
-  // EventTabs' parent wires this via context.unsavedChanges if needed.
-  const witnessMissing = isOther && !ev.napkins.foldType.trim() && !ev.notes.trim();
+  // INV-04 no longer enforced (color picker removed 2026-05-24).
+
+  // Maintenance Log 2026-05-24: chip group state for the canonical fold types.
+  const activeFoldKind = deriveFoldKind(ev.napkins);
+  const foldOtherText = activeFoldKind === 'אחר' ? ev.napkins.foldType : '';
+
+  function pickFoldKind(kind: FoldType) {
+    if (kind === 'אחר') {
+      // Switching to "אחר" — keep any existing free-text witness if it isn't
+      // one of the canonical labels; otherwise clear so the user starts fresh.
+      const keep = (FOLD_TYPES as readonly string[]).includes(
+        ev!.napkins.foldType.trim(),
+      )
+        ? ''
+        : ev!.napkins.foldType;
+      patchNapkins({ foldKind: 'אחר', foldType: keep });
+    } else {
+      // Canonical pick — mirror the chip label into foldType so DOCX export
+      // and backups continue to read the human-readable string.
+      patchNapkins({ foldKind: kind, foldType: kind });
+    }
+  }
+
+  function setFoldOtherText(text: string) {
+    patchNapkins({ foldKind: 'אחר', foldType: text });
+  }
 
   return (
     <div data-testid="event-panel-napkins-form">
@@ -100,22 +132,6 @@ export function NapkinsTab(): ReactNode {
           className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-10"
           onSubmit={(e) => e.preventDefault()}
         >
-          {/* Color */}
-          <div className="md:col-span-2 flex flex-col gap-3">
-            <ChipLabel>צבע</ChipLabel>
-            <div className="flex gap-4 flex-wrap">
-              {NAPKIN_COLORS.map((c) => (
-                <RadioChip
-                  key={c}
-                  label={c}
-                  selected={ev.napkins.color === c}
-                  onSelect={() => patchNapkins({ color: c })}
-                  testId={`napkin-color-${c}`}
-                />
-              ))}
-            </div>
-          </div>
-
           {/* Fabric */}
           <div className="md:col-span-2 flex flex-col gap-3">
             <ChipLabel>בד</ChipLabel>
@@ -132,44 +148,40 @@ export function NapkinsTab(): ReactNode {
             </div>
           </div>
 
-          {/* Fold type — also serves as the INV-04 witness when color === 'אחר' */}
-          <div className="md:col-span-2 flex flex-col gap-2">
-            <ChipLabel>
-              {isOther ? 'קיפול / פירוט צבע' : 'קיפול'}
-              {isOther && (
-                <span aria-hidden="true" className="text-gold mr-1">
-                  *
-                </span>
-              )}
-            </ChipLabel>
-            <input
-              type="text"
-              required={isOther}
-              value={ev.napkins.foldType}
-              onChange={(e) => patchNapkins({ foldType: e.target.value })}
-              placeholder={
-                isOther ? 'פרט את הצבע ואת סוג הקיפול…' : 'למשל: קיפול קלאסי'
-              }
+          {/* Fold type — Maintenance Log 2026-05-24: replaced free-text input
+              with a 5-chip RadioChip group + "אחר" escape that re-opens a
+              free-text field. The free-text branch also serves as the INV-04
+              witness when color === 'אחר'. */}
+          <div className="md:col-span-2 flex flex-col gap-3">
+            <ChipLabel>סוג קיפול</ChipLabel>
+            <div
+              role="radiogroup"
+              aria-label="סוג קיפול"
               data-testid="napkin-field-foldType"
-              aria-invalid={witnessMissing}
-              aria-describedby={witnessMissing ? 'napkin-witness-hint' : undefined}
-              className={[
-                'w-full bg-transparent border-0 border-b pb-2 px-0',
-                'text-cream font-sans rounded-none focus:outline-none',
-                'transition-colors duration-150 ease-[cubic-bezier(0.4,0,0.2,1)]',
-                witnessMissing
-                  ? 'border-gold-dark focus:border-gold'
-                  : 'border-border-subtle focus:border-gold',
-              ].join(' ')}
-            />
-            {witnessMissing && (
-              <p
-                id="napkin-witness-hint"
-                className="text-tiny text-gold-dark"
-                role="alert"
-              >
-                בעת בחירת "אחר" יש לפרט את הצבע — אחרת המסמך יישלח ללא פרטים.
-              </p>
+              className="flex gap-4 flex-wrap"
+            >
+              {FOLD_TYPES.map((k) => (
+                <RadioChip
+                  key={k}
+                  label={k}
+                  selected={activeFoldKind === k}
+                  onSelect={() => pickFoldKind(k)}
+                  testId={`napkin-fold-${k}`}
+                />
+              ))}
+            </div>
+            {activeFoldKind === 'אחר' && (
+              <div className="flex flex-col gap-2 mt-1">
+                <ChipLabel>פירוט קיפול</ChipLabel>
+                <input
+                  type="text"
+                  value={foldOtherText}
+                  onChange={(e) => setFoldOtherText(e.target.value)}
+                  placeholder="תאר את סוג הקיפול…"
+                  data-testid="napkin-fold-other-input"
+                  className="w-full bg-transparent border-0 border-b pb-2 px-0 text-cream font-sans rounded-none focus:outline-none transition-colors duration-150 ease-[cubic-bezier(0.4,0,0.2,1)] border-border-subtle focus:border-gold"
+                />
+              </div>
             )}
           </div>
 

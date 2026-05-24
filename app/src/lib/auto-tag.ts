@@ -24,6 +24,7 @@
 import { type ImageMetadata, type ImageTag, LibError } from '../types';
 import { putImageTag } from './db';
 import { getOrBakeThumbnail } from './images';
+import { allowedLabelsFor, normalizeFabric } from './category-schema';
 
 // ===========================================================================
 // A. Filename heuristic
@@ -460,7 +461,7 @@ export async function autoTagLibrary(
         if (signal?.aborted) return;
 
         try {
-          const labels = new Set<string>([
+          const rawLabels = new Set<string>([
             ...deriveLabelsFromName(image),
             ...deriveLabelsFromVisualRange(image),
           ]);
@@ -476,8 +477,17 @@ export async function autoTagLibrary(
             }
             if (blob) {
               const color = await deriveColorFromThumbnail(blob);
-              if (color) labels.add(color);
+              if (color) rawLabels.add(color);
             }
+          }
+
+          // Filter through category schema — only keep labels that are allowed
+          // for this image's category. Normalize fabric alias before checking.
+          const allowed = allowedLabelsFor(image.category);
+          const labels = new Set<string>();
+          for (const raw of rawLabels) {
+            const normalized = normalizeFabric(raw);
+            if (allowed.has(normalized)) labels.add(normalized);
           }
 
           if (labels.size === 0) {

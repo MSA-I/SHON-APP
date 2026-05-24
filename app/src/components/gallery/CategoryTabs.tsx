@@ -35,7 +35,7 @@ export function CategoryTabs({
   return (
     <nav
       data-testid="gallery-category-tabs"
-      className="flex shrink-0 items-center gap-4 overflow-x-auto border-b border-border-subtle/50 py-8"
+      className="flex shrink-0 items-center gap-4 overflow-x-auto overscroll-x-contain border-b border-border-subtle/50 py-8 px-16 scroll-px-16"
       style={{ scrollbarWidth: 'none' }}
       aria-label="קטגוריות"
     >
