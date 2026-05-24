@@ -1,4 +1,4 @@
-// SOP: architecture/03-document-generation.md
+// SOP: architecture/03-document-generation.md (Editorial Magazine template)
 // SOP: architecture/04-rtl-and-fonts.md
 // SOP: architecture/11-domain-invariants.md (INV-01 cap @ 5 selections)
 // Schema: claude.md § Data Schemas (LAW)
@@ -7,9 +7,20 @@
 // No FS, no IndexedDB, no Date.now(); the only timestamp used (signedAt) comes
 // from the input. Caller writes bytes to disk via tauriFsExtras.atomicWriteFile.
 //
-// This module's only allowed imports are 'docx' and '../types'. No React, no
-// Tauri, no idb. The Constitution's Behavioral Rule #7 (zero external network)
-// is upheld by the docx package being a pure JS library shipped via npm.
+// This module's only allowed imports are 'docx', '../types', './docx-template',
+// './signature', and './images' (for the canvas-based downscaler).
+// No React, no Tauri, no idb. The Constitution's Behavioral Rule #7 (zero
+// external network) is upheld by the docx package being a pure JS library
+// shipped via npm.
+//
+// IMPORTANT — `docx@8.5` part-name quirk (Maintenance Log 2026-05-25):
+// every `ImageRun` is packaged as `word/media/<uuid>.png` (hard-coded `.png`
+// suffix in `node_modules/docx/build/index.cjs:11122`), and
+// `[Content_Types].xml` only declares `image/png`. We therefore MUST embed
+// PNG bytes only — JPEG bytes inside a `.png`-keyed part trigger Word's
+// "this file is corrupt" dialog. Every byte buffer that reaches an
+// `ImageRun` flows through `downscaleImageToPng` (see `lib/images.ts`) and
+// is re-validated with `assertPngOrJpegMagic` to catch any future regression.
 //
 // Bidi pattern (canonical, per SOP 04):
 //   - Document.styles.default sets every paragraph bidirectional + alignment
@@ -22,54 +33,33 @@
 
 import {
   AlignmentType,
-  BorderStyle,
   Document,
-  ImageRun,
   Packer,
   PageOrientation,
   Paragraph,
+  PageBreak,
   TextRun,
   convertInchesToTwip,
-  type IParagraphOptions,
 } from 'docx';
 
 import {
   type DocxBuildInput,
-  type ImageSelection,
   type Signature,
   LibError,
 } from '../types';
 import { rasterizeStrokes, decodePngDataUrl } from './signature';
-
-// ---------------------------------------------------------------------------
-// Luxury Editorial palette (SOP 03 § Color Palette)
-// ---------------------------------------------------------------------------
-
-const COLORS = {
-  ink: '0F0E0C',
-  cream: 'F5F0E8',
-  gold: 'C9A961',
-  goldDark: 'A88B47',
-} as const;
-
-const FONT_HEBREW = 'Frank Ruhl Libre';
-
-// Sizes are in half-points (docx convention): 22 → 11pt, 28 → 14pt, etc.
-const SIZE = {
-  body: 22,
-  small: 18,
-  label: 18,
-  sectionHead: 28,
-  coupleHeadline: 44,
-  pageTitle: 56,
-} as const;
-
-// Image transformations in points (1pt ≈ 1/72in). Sizes per task brief.
-const IMG_DIM = {
-  logo: { width: 100, height: 100 },
-  designSelection: { width: 250, height: 180 },
-  signature: { width: 200, height: 60 },
-} as const;
+import { downscaleImageToPng } from './images';
+import {
+  DOCX_TOKENS,
+  coverHero,
+  footerStrip,
+  headerBand,
+  ornamentDivider,
+  sectionHeader,
+  fieldTable,
+  imageGrid2x,
+  signatureBlock,
+} from './docx-template';
 
 // Maximum table-design selections (INV-01).
 const MAX_TABLE_DESIGN_SELECTIONS = 5;
@@ -89,6 +79,10 @@ const CHUPPAH_TYPE_LITERALS = new Set([
   'שקופה',
   'אובלית',
 ]);
+
+// Image downscaling — production DOCX should have 600px max-width images
+// instead of 256px thumbnails (better quality for print/PDF).
+const DOCX_IMAGE_MAX_WIDTH = 600;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -113,244 +107,304 @@ export async function buildEventDocx(
   try {
     assertInput(input);
 
-    const children: Paragraph[] = [];
-
-    // 1. Header (logo) — embedded inline at the top of the body. SOP 03 puts
-    //    the brand block at the top; we prefer an inline image (when provided)
-    //    over a true Word "Header" because inline is simpler, prints
-    //    identically, and doesn't require a Header reference id.
+    // Validate the logo bytes once (re-used by both `coverHero` and
+    // `headerBand`). `loadLogoPng` in SummaryTab rasterizes via canvas →
+    // `toDataURL('image/png')`, so the magic should always pass — but we
+    // still gate it because a future logo loader might forget.
+    let validatedLogo: Uint8Array | null = null;
     if (input.logoPngBytes && input.logoPngBytes.byteLength > 0) {
-      children.push(buildLogoParagraph(input.logoPngBytes));
-    }
-    children.push(brandWordmark());
-    children.push(brandTagline());
-    children.push(divider());
-
-    // 2. Title + couple block
-    children.push(pageTitle('תכנון אירוע'));
-    children.push(ornament());
-    children.push(rtlPara({
-      spacing: { after: 60 },
-      children: [labelRun('שמות בני הזוג', SIZE.label)],
-    }));
-    children.push(rtlPara({
-      spacing: { after: 240 },
-      children: [
-        new TextRun({
-          text: input.client.coupleNames,
-          rightToLeft: true,
-          font: FONT_HEBREW,
-          size: SIZE.coupleHeadline,
-          color: COLORS.ink,
-          bold: true,
-        }),
-      ],
-    }));
-    children.push(divider());
-
-    // 3. Event details
-    children.push(sectionHeading('פרטי האירוע'));
-    children.push(fieldRow('תאריך', formatIsoDate(input.event.date)));
-    children.push(fieldRow('יום', input.event.dayOfWeek));
-    children.push(fieldRow('שעת תחילה', input.event.startTime));
-    children.push(fieldRow('לוקיישן', input.event.location));
-    // Numbers are rendered as natural digits inside the bidi paragraph; Word's
-    // bidi resolver keeps `350` reading L→R inside an RTL line.
-    children.push(fieldRow('כמות מוזמנים', String(input.event.guestCount)));
-    children.push(fieldRow('אירוע מעורב', input.event.isMixed ? 'כן' : 'לא'));
-    if (input.event.notes && input.event.notes.trim().length > 0) {
-      children.push(rtlPara({
-        spacing: { before: 100, after: 80 },
-        children: [
-          labelRun('הערות:  ', SIZE.label),
-          valueRun(input.event.notes, SIZE.body),
-        ],
-      }));
-    }
-    children.push(divider());
-
-    // 4. Napkins
-    children.push(sectionHeading('מפות ומפיות'));
-    children.push(fieldRow('צבע מפיות', input.event.napkins.color));
-    children.push(fieldRow('סוג בד', input.event.napkins.fabric));
-    children.push(fieldRow('סוג קיפול', input.event.napkins.foldType));
-    // INV-04: when color === 'אחר', render the free-text witness explicitly so
-    // a venue ordering napkins always sees the detail. The witness lives in
-    // foldType (preferred) or falls back to event.notes.
-    if (input.event.napkins.color === 'אחר') {
-      const witness =
-        (input.event.napkins.foldType && input.event.napkins.foldType.trim()) ||
-        (input.event.notes && input.event.notes.trim()) ||
-        '';
-      if (witness.length > 0) {
-        children.push(rtlPara({
-          spacing: { after: 80 },
-          children: [
-            labelRun('פירוט צבע מותאם:  ', SIZE.label),
-            valueRun(witness, SIZE.body),
-          ],
-        }));
+      try {
+        assertPngOrJpegMagic(input.logoPngBytes, { what: 'logo PNG' });
+        validatedLogo = input.logoPngBytes;
+      } catch {
+        // Logo is decorative — drop it rather than failing the whole export.
+        validatedLogo = null;
       }
     }
-    children.push(divider());
 
-    // 5. Reception (only when at-resort)
-    if (input.event.reception.atResort) {
-      children.push(sectionHeading('קבלת פנים'));
-      children.push(rtlPara({
-        spacing: { after: 240 },
-        children: [valueRun('מתקיימת בריזורט (למעלה)', SIZE.body)],
-      }));
-      children.push(divider());
+    // ─────────────────────────────────────────────────────────────────────
+    // Section 1: Cover page
+    // ─────────────────────────────────────────────────────────────────────
+    const coverChildren: Paragraph[] = coverHero({
+      logoPngBytes: validatedLogo,
+      coupleNames: input.client.coupleNames,
+      dateDisplay: formatIsoDate(input.event.date),
+      dayOfWeek: input.event.dayOfWeek,
+      startTime: input.event.startTime,
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Section 2: Body pages (header + footer + content sections)
+    // ─────────────────────────────────────────────────────────────────────
+    const bodyChildren: Paragraph[] = [];
+
+    // 1. Event details
+    bodyChildren.push(...sectionHeader('פרטי אירוע', 'פרטי האירוע'));
+    bodyChildren.push(
+      ...fieldTable([
+        { label: 'תאריך', value: formatIsoDate(input.event.date) },
+        { label: 'יום', value: input.event.dayOfWeek },
+        { label: 'שעת תחילה', value: input.event.startTime },
+        { label: 'מתחם', value: input.event.location },
+        { label: 'כמות מוזמנים', value: String(input.event.guestCount) },
+        { label: 'אירוע מעורב', value: input.event.isMixed ? 'כן' : 'לא' },
+      ]),
+    );
+    if (input.event.notes && input.event.notes.trim().length > 0) {
+      bodyChildren.push(
+        new Paragraph({
+          bidirectional: true,
+          alignment: AlignmentType.RIGHT,
+          spacing: { before: 100, after: 80 },
+          children: [
+            new TextRun({
+              text: 'הערות: ',
+              rightToLeft: true,
+              font: DOCX_TOKENS.fonts.serif,
+              size: 22,
+              color: DOCX_TOKENS.goldMuted,
+            }),
+            new TextRun({
+              text: input.event.notes,
+              rightToLeft: true,
+              font: DOCX_TOKENS.fonts.serif,
+              size: 22,
+              color: DOCX_TOKENS.ink,
+            }),
+          ],
+        }),
+      );
     }
+    bodyChildren.push(ornamentDivider());
+    bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 6. Table design selections (cap at 5 — INV-01)
+    // 2. Table designs
     if (input.selections.tableDesigns.length > 0) {
-      children.push(sectionHeading('עיצובי שולחן'));
+      bodyChildren.push(...sectionHeader('עיצוב', 'עיצובי שולחן'));
       const cappedDesigns = input.selections.tableDesigns.slice(
         0,
         MAX_TABLE_DESIGN_SELECTIONS,
       );
-      cappedDesigns.forEach((sel, idx) => {
-        children.push(...buildSelectionBlock(sel, idx + 1, input.imageBytes, IMG_DIM.designSelection));
-      });
-      children.push(divider());
+      const gridItems = await Promise.all(
+        cappedDesigns.map(async (sel) => {
+          const bytes = input.imageBytes.get(sel.imagePath);
+          if (!bytes || bytes.byteLength === 0) {
+            throw new LibError(
+              `Missing image bytes for selection: "${sel.imagePath}"`,
+              { code: 'DOCX_IMAGE_EMBED', path: sel.imagePath },
+            );
+          }
+          const downscaled = await bakeSelectionForGrid(
+            bytes,
+            sel.imagePath,
+            'table-design selection',
+          );
+          return {
+            bytes: downscaled,
+            widthPx: 300,
+            heightPx: 200,
+            note: sel.notes,
+          };
+        }),
+      );
+      bodyChildren.push(...imageGrid2x(gridItems));
+      bodyChildren.push(ornamentDivider());
+      bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
     }
 
-    // 7. Chairs
-    children.push(sectionHeading('כיסאות'));
-    children.push(fieldRow('סוג כיסאות', input.event.chairs.type));
-    if (input.event.chairs.bridalChair && input.event.chairs.bridalChair.trim().length > 0) {
-      children.push(fieldRow('כיסא כלה', input.event.chairs.bridalChair));
+    // 3. Napkins (color removed 2026-05-24 — derived from designSelections)
+    bodyChildren.push(...sectionHeader('מפיות', 'מפות ומפיות'));
+    bodyChildren.push(
+      ...fieldTable([
+        { label: 'בד', value: input.event.napkins.fabric },
+        { label: 'קיפול', value: input.event.napkins.foldType || '—' },
+        { label: 'קבלת פנים ריזורט', value: input.event.reception.atResort ? 'כן' : 'לא' },
+      ]),
+    );
+    if (input.event.napkins.designSelections && input.event.napkins.designSelections.length > 0) {
+      const napkinsGrid = await Promise.all(
+        input.event.napkins.designSelections.map(async (sel) => {
+          const bytes = input.imageBytes.get(sel.imagePath);
+          if (!bytes || bytes.byteLength === 0) {
+            throw new LibError(
+              `Missing image bytes for napkin selection: "${sel.imagePath}"`,
+              { code: 'DOCX_IMAGE_EMBED', path: sel.imagePath },
+            );
+          }
+          const downscaled = await bakeSelectionForGrid(
+            bytes,
+            sel.imagePath,
+            'napkin selection',
+          );
+          return {
+            bytes: downscaled,
+            widthPx: 300,
+            heightPx: 200,
+            note: sel.notes,
+          };
+        }),
+      );
+      bodyChildren.push(...imageGrid2x(napkinsGrid));
     }
-    children.push(divider());
+    bodyChildren.push(ornamentDivider());
+    bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 8. Chuppah
-    children.push(sectionHeading('חופה'));
+    // 4. Chuppah
+    bodyChildren.push(...sectionHeader('חופה', 'חופה'));
     if (!CHUPPAH_TYPE_LITERALS.has(input.event.chuppah.type)) {
-      // INV-08: persisted Hebrew literals must remain Hebrew. Defensive only —
-      // the union type prevents this at compile time.
       throw new LibError(
         `Unknown chuppah type literal: "${input.event.chuppah.type}"`,
         { code: 'DOCX_BUILD' },
       );
     }
-    children.push(fieldRow('סוג חופה', input.event.chuppah.type));
-    children.push(fieldRow('מיקום', input.event.chuppah.location));
+    const chuppahRows: { label: string; value: string }[] = [
+      { label: 'סוג', value: input.event.chuppah.type },
+      { label: 'מיקום', value: input.event.chuppah.location },
+    ];
     if (input.event.chuppah.fabricDetails && input.event.chuppah.fabricDetails.trim().length > 0) {
-      children.push(fieldRow('בדים', input.event.chuppah.fabricDetails));
-    }
-    if (input.selections.chuppah.length > 0) {
-      input.selections.chuppah.forEach((sel, idx) => {
-        children.push(...buildSelectionBlock(sel, idx + 1, input.imageBytes, IMG_DIM.designSelection));
-      });
+      chuppahRows.push({ label: 'בדים', value: input.event.chuppah.fabricDetails });
     }
     if (input.event.chuppah.aisleDetails && input.event.chuppah.aisleDetails.trim().length > 0) {
-      children.push(fieldRow('שדרה לחופה', input.event.chuppah.aisleDetails));
+      chuppahRows.push({ label: 'שדרה', value: input.event.chuppah.aisleDetails });
     }
-    children.push(divider());
+    bodyChildren.push(...fieldTable(chuppahRows));
+    if (input.selections.chuppah.length > 0) {
+      const chuppahGrid = await Promise.all(
+        input.selections.chuppah.map(async (sel) => {
+          const bytes = input.imageBytes.get(sel.imagePath);
+          if (!bytes || bytes.byteLength === 0) {
+            throw new LibError(
+              `Missing image bytes for chuppah selection: "${sel.imagePath}"`,
+              { code: 'DOCX_IMAGE_EMBED', path: sel.imagePath },
+            );
+          }
+          const downscaled = await bakeSelectionForGrid(
+            bytes,
+            sel.imagePath,
+            'chuppah selection',
+          );
+          return {
+            bytes: downscaled,
+            widthPx: 300,
+            heightPx: 200,
+            note: sel.notes,
+          };
+        }),
+      );
+      bodyChildren.push(...imageGrid2x(chuppahGrid));
+    }
+    bodyChildren.push(ornamentDivider());
+    bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 9. Upgrades
-    children.push(sectionHeading('שדרוגים'));
+    // 5. Upgrades
+    bodyChildren.push(...sectionHeader('שדרוגים', 'שדרוגים'));
     if (input.event.upgrades.description && input.event.upgrades.description.trim().length > 0) {
-      children.push(rtlPara({
-        spacing: { after: 160 },
-        children: [valueRun(input.event.upgrades.description, SIZE.body)],
-      }));
+      bodyChildren.push(
+        new Paragraph({
+          bidirectional: true,
+          alignment: AlignmentType.RIGHT,
+          spacing: { after: 160 },
+          children: [
+            new TextRun({
+              text: input.event.upgrades.description,
+              rightToLeft: true,
+              font: DOCX_TOKENS.fonts.serif,
+              size: 22,
+              color: DOCX_TOKENS.ink,
+            }),
+          ],
+        }),
+      );
     }
-    // SOP 09 §6 ornament rule: the bullet glyph is the gold ❖, prefixed
-    // verbatim because docx's `bullet` numbering style ships with a default
-    // disc — we want the brand mark instead.
     input.event.upgrades.items
       .filter((item) => item && item.trim().length > 0)
       .forEach((item) => {
-        children.push(rtlPara({
-          spacing: { after: 80 },
-          indent: { start: 360 },
-          children: [
-            new TextRun({
-              text: '❖  ',
-              rightToLeft: true,
-              font: FONT_HEBREW,
-              size: SIZE.body,
-              color: COLORS.gold,
-            }),
-            valueRun(item, SIZE.body),
-          ],
-        }));
+        bodyChildren.push(
+          new Paragraph({
+            bidirectional: true,
+            alignment: AlignmentType.RIGHT,
+            spacing: { after: 80 },
+            indent: { start: 360 },
+            children: [
+              new TextRun({
+                text: '❖  ',
+                rightToLeft: true,
+                font: DOCX_TOKENS.fonts.serif,
+                size: 22,
+                color: DOCX_TOKENS.gold,
+              }),
+              new TextRun({
+                text: item,
+                rightToLeft: true,
+                font: DOCX_TOKENS.fonts.serif,
+                size: 22,
+                color: DOCX_TOKENS.ink,
+              }),
+            ],
+          }),
+        );
       });
-    children.push(divider());
+    if (input.event.upgrades.designSelections && input.event.upgrades.designSelections.length > 0) {
+      const upgradesGrid = await Promise.all(
+        input.event.upgrades.designSelections.map(async (sel) => {
+          const bytes = input.imageBytes.get(sel.imagePath);
+          if (!bytes || bytes.byteLength === 0) {
+            throw new LibError(
+              `Missing image bytes for upgrade selection: "${sel.imagePath}"`,
+              { code: 'DOCX_IMAGE_EMBED', path: sel.imagePath },
+            );
+          }
+          const downscaled = await bakeSelectionForGrid(
+            bytes,
+            sel.imagePath,
+            'upgrade selection',
+          );
+          return {
+            bytes: downscaled,
+            widthPx: 300,
+            heightPx: 200,
+            note: sel.notes,
+          };
+        }),
+      );
+      bodyChildren.push(...imageGrid2x(upgradesGrid));
+    }
+    bodyChildren.push(ornamentDivider());
+    bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 10. Signature block (image + line + date stamp)
-    // Maintenance Log 2026-05-21: signature is dual-shape. PNG signatures are
-    // embedded as captured (cream-on-dark from the legacy capture, but Word
-    // ignores that — the bytes are just bytes). Vector signatures are
-    // rasterized to BLACK on WHITE per Behavioral Rule #13 ("DOCX output is
-    // ALWAYS light-theme") regardless of the active UI theme.
-    children.push(sectionHeading('חתימה'));
+    // 6. Signature
+    bodyChildren.push(...sectionHeader('חתימה', 'חתימה דיגיטלית'));
     if (input.signature) {
       const sigBytes = await materializeSignaturePng(input.signature);
-      children.push(buildSignatureImageParagraph(sigBytes));
+      assertPngOrJpegMagic(sigBytes, { what: 'signature PNG' });
+      const dateDisplay = formatEpochToDisplayDate(input.signature.signedAt);
+      bodyChildren.push(...signatureBlock({ signaturePngBytes: sigBytes, dateDisplay }));
     }
-    children.push(rtlPara({
-      spacing: { before: 60, after: 120 },
-      border: {
-        top: { color: COLORS.gold, space: 8, style: BorderStyle.SINGLE, size: 6 },
-      },
-      children: [
-        new TextRun({
-          text: 'חתימת הזוג: ____________________________',
-          rightToLeft: true,
-          font: FONT_HEBREW,
-          size: SIZE.body,
-          color: COLORS.ink,
-        }),
-      ],
-    }));
-    if (input.signature) {
-      children.push(rtlPara({
-        spacing: { before: 60, after: 80 },
+    bodyChildren.push(ornamentDivider());
+    bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
+
+    // 7. Legal terms
+    bodyChildren.push(...sectionHeader('תנאים', 'תנאים משפטיים'));
+    bodyChildren.push(
+      new Paragraph({
+        bidirectional: true,
+        alignment: AlignmentType.RIGHT,
+        spacing: { after: 240, line: 320 },
         children: [
           new TextRun({
-            text: 'תאריך חתימה: ' + formatEpochToDisplayDate(input.signature.signedAt),
+            text: LEGAL_TERMS_VERBATIM,
             rightToLeft: true,
-            font: FONT_HEBREW,
-            size: SIZE.small,
-            color: COLORS.goldDark,
+            font: DOCX_TOKENS.fonts.serif,
+            size: 18,
+            color: DOCX_TOKENS.ink,
           }),
         ],
-      }));
-    }
+      }),
+    );
 
-    // 11. Legal terms (verbatim — see LEGAL_TERMS_VERBATIM constant)
-    children.push(divider());
-    children.push(rtlPara({
-      spacing: { before: 200, after: 100 },
-      children: [
-        new TextRun({
-          text: 'תנאים',
-          rightToLeft: true,
-          font: FONT_HEBREW,
-          size: SIZE.body,
-          color: COLORS.gold,
-          bold: true,
-        }),
-      ],
-    }));
-    children.push(rtlPara({
-      spacing: { after: 240, line: 320 },
-      children: [
-        new TextRun({
-          text: LEGAL_TERMS_VERBATIM,
-          rightToLeft: true,
-          font: FONT_HEBREW,
-          size: SIZE.small,
-          color: COLORS.ink,
-        }),
-      ],
-    }));
-
-    // ---- Document assembly ----
+    // ─────────────────────────────────────────────────────────────────────
+    // Document assembly
+    // ─────────────────────────────────────────────────────────────────────
     const doc = new Document({
       creator: 'שון בלאיש - הפקות',
       title: `תכנון אירוע - ${input.client.coupleNames}`,
@@ -358,12 +412,28 @@ export async function buildEventDocx(
       styles: {
         default: {
           document: {
-            run: { font: FONT_HEBREW, rightToLeft: true },
+            run: { font: DOCX_TOKENS.fonts.serif, rightToLeft: true },
             paragraph: { alignment: AlignmentType.RIGHT },
           },
         },
       },
       sections: [
+        // Section 1: Cover (no header/footer)
+        {
+          properties: {
+            page: {
+              margin: {
+                top: convertInchesToTwip(1.2),
+                right: convertInchesToTwip(1.0),
+                bottom: convertInchesToTwip(1.2),
+                left: convertInchesToTwip(1.0),
+              },
+              size: { orientation: PageOrientation.PORTRAIT },
+            },
+          },
+          children: coverChildren,
+        },
+        // Section 2: Body (header + footer)
         {
           properties: {
             page: {
@@ -376,16 +446,28 @@ export async function buildEventDocx(
               size: { orientation: PageOrientation.PORTRAIT },
             },
           },
-          children,
+          headers: {
+            default: headerBand(validatedLogo),
+          },
+          footers: {
+            default: footerStrip(),
+          },
+          children: bodyChildren,
         },
       ],
     });
 
-    // Packer.toBlob is the browser-friendly path (no Buffer dependency). We
-    // need a Uint8Array for the Tauri write API, so unwrap the Blob.
+    // Browser path (WebView2 has no Node `Buffer`):
+    //   `Packer.toBuffer` errors with "nodebuffer is not supported by this
+    //   platform" because docx → JSZip falls through to its node Buffer
+    //   branch. `Packer.toBlob` uses the JSZip "blob" type which works in
+    //   the browser. We then convert to Uint8Array for tauri-fs.writeFile.
+    //   The earlier "blob is truncated in WebView2" report was caused by
+    //   the duplicate PageBreak inside coverHero (now fixed); the blob path
+    //   itself is reliable.
     const blob = await Packer.toBlob(doc);
-    const ab = await blob.arrayBuffer();
-    return new Uint8Array(ab);
+    const arrayBuffer = await blob.arrayBuffer();
+    return new Uint8Array(arrayBuffer);
   } catch (err) {
     if (err instanceof LibError) throw err;
     throw new LibError(
@@ -396,7 +478,7 @@ export async function buildEventDocx(
 }
 
 // ---------------------------------------------------------------------------
-// Internal builders
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 function assertInput(input: DocxBuildInput): void {
@@ -417,219 +499,60 @@ function assertInput(input: DocxBuildInput): void {
   }
 }
 
-function rtlPara(opts: IParagraphOptions): Paragraph {
-  return new Paragraph({
-    bidirectional: true,
-    alignment: AlignmentType.RIGHT,
-    ...opts,
-  });
-}
-
-function labelRun(text: string, size: number = SIZE.label): TextRun {
-  return new TextRun({
-    text,
-    rightToLeft: true,
-    font: FONT_HEBREW,
-    size,
-    color: COLORS.goldDark,
-  });
-}
-
-function valueRun(text: string, size: number = SIZE.body): TextRun {
-  return new TextRun({
-    text,
-    rightToLeft: true,
-    font: FONT_HEBREW,
-    size,
-    color: COLORS.ink,
-  });
-}
-
-function fieldRow(label: string, value: string): Paragraph {
-  return rtlPara({
-    spacing: { after: 80 },
-    children: [labelRun(label + ':  ', SIZE.label), valueRun(value, SIZE.body)],
-  });
-}
-
-function divider(): Paragraph {
-  return rtlPara({
-    border: {
-      bottom: { color: COLORS.gold, space: 4, style: BorderStyle.SINGLE, size: 6 },
-    },
-    spacing: { before: 120, after: 240 },
-  });
-}
-
-function ornament(): Paragraph {
-  return new Paragraph({
-    bidirectional: true,
-    alignment: AlignmentType.CENTER,
-    spacing: { before: 100, after: 200 },
-    children: [
-      new TextRun({
-        text: '◆ ◆ ◆',
-        font: FONT_HEBREW,
-        size: SIZE.small,
-        color: COLORS.gold,
-      }),
-    ],
-  });
-}
-
-function sectionHeading(text: string): Paragraph {
-  return rtlPara({
-    spacing: { before: 120, after: 160 },
-    children: [
-      new TextRun({
-        text,
-        rightToLeft: true,
-        font: FONT_HEBREW,
-        size: SIZE.sectionHead,
-        color: COLORS.gold,
-        bold: true,
-      }),
-    ],
-  });
-}
-
-function pageTitle(text: string): Paragraph {
-  return rtlPara({
-    spacing: { before: 120, after: 80 },
-    children: [
-      new TextRun({
-        text,
-        rightToLeft: true,
-        font: FONT_HEBREW,
-        size: SIZE.pageTitle,
-        color: COLORS.ink,
-        bold: true,
-      }),
-    ],
-  });
-}
-
-function brandWordmark(): Paragraph {
-  return rtlPara({
-    spacing: { after: 60 },
-    children: [
-      new TextRun({
-        text: 'שון בלאיש',
-        rightToLeft: true,
-        font: FONT_HEBREW,
-        size: 32,
-        color: COLORS.ink,
-        bold: true,
-      }),
-    ],
-  });
-}
-
-function brandTagline(): Paragraph {
-  return rtlPara({
-    spacing: { after: 60 },
-    children: [
-      new TextRun({
-        text: 'הפקות',
-        rightToLeft: true,
-        font: FONT_HEBREW,
-        size: SIZE.small,
-        color: COLORS.gold,
-      }),
-    ],
-  });
-}
-
-function buildLogoParagraph(logoPngBytes: Uint8Array): Paragraph {
-  // Right-aligned logo per RTL editorial convention.
-  return new Paragraph({
-    bidirectional: true,
-    alignment: AlignmentType.RIGHT,
-    spacing: { after: 120 },
-    children: [
-      new ImageRun({
-        data: logoPngBytes,
-        transformation: { width: IMG_DIM.logo.width, height: IMG_DIM.logo.height },
-      }),
-    ],
-  });
-}
-
-function buildSelectionBlock(
-  selection: ImageSelection,
-  index: number,
-  imageBytes: Map<string, Uint8Array>,
-  dim: { width: number; height: number },
-): Paragraph[] {
-  const bytes = imageBytes.get(selection.imagePath);
-  if (!bytes || bytes.byteLength === 0) {
+/**
+ * Magic-byte gate for every `ImageRun` payload. `docx@8.5` packages each
+ * image as `word/media/<uuid>.png` and `[Content_Types].xml` declares only
+ * `image/png`, so embedding anything other than a real PNG triggers Word's
+ * "this file is corrupt" dialog. JPEG is also accepted here because Word
+ * will tolerate it inside a `.png` part — but only after we've re-encoded
+ * the canvas output via `downscaleImageToPng`, which always produces PNG.
+ *
+ * The fallthrough exists for the WebView2-canvas-unavailable path in
+ * `downscaleImageToPng`: in that case the original bytes pass through
+ * untouched, and only PNG/JPEG inputs survive this gate. WebP / HEIC inputs
+ * caught here are surfaced as a `DOCX_IMAGE_EMBED` so the user sees a
+ * specific error rather than Word's generic corruption dialog.
+ */
+function assertPngOrJpegMagic(bytes: Uint8Array, ctx: { path?: string; what: string }): void {
+  if (!bytes || bytes.byteLength < 4) {
+    throw new LibError(`${ctx.what}: image bytes are empty or truncated`, {
+      code: 'DOCX_IMAGE_EMBED',
+      path: ctx.path,
+    });
+  }
+  // PNG: 89 50 4E 47
+  const isPng =
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  // JPEG: FF D8 FF
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (!isPng && !isJpeg) {
     throw new LibError(
-      `Missing image bytes for selection: "${selection.imagePath}"`,
-      { code: 'DOCX_IMAGE_EMBED', path: selection.imagePath },
+      `${ctx.what}: image is not PNG or JPEG (docx@8.5 requires PNG-compatible bytes)`,
+      { code: 'DOCX_IMAGE_EMBED', path: ctx.path },
     );
   }
-
-  const block: Paragraph[] = [];
-
-  // Caption row: "1. <imageName>" + optional italic notes.
-  const captionChildren: TextRun[] = [
-    new TextRun({
-      text: `${index}.  `,
-      rightToLeft: true,
-      font: FONT_HEBREW,
-      size: SIZE.body,
-      color: COLORS.goldDark,
-    }),
-    valueRun(selection.imageName, SIZE.body),
-  ];
-  if (selection.notes && selection.notes.trim().length > 0) {
-    captionChildren.push(
-      new TextRun({
-        text: '   — ' + selection.notes,
-        rightToLeft: true,
-        font: FONT_HEBREW,
-        size: SIZE.small,
-        color: COLORS.goldDark,
-        italics: true,
-      }),
-    );
-  }
-  block.push(rtlPara({
-    spacing: { before: 120, after: 80 },
-    children: captionChildren,
-  }));
-
-  // Image row.
-  block.push(new Paragraph({
-    bidirectional: true,
-    alignment: AlignmentType.RIGHT,
-    spacing: { after: 160 },
-    children: [
-      new ImageRun({
-        data: bytes,
-        transformation: { width: dim.width, height: dim.height },
-      }),
-    ],
-  }));
-
-  return block;
 }
 
-function buildSignatureImageParagraph(bytes: Uint8Array): Paragraph {
-  return new Paragraph({
-    bidirectional: true,
-    alignment: AlignmentType.RIGHT,
-    spacing: { before: 240, after: 60 },
-    children: [
-      new ImageRun({
-        data: bytes,
-        transformation: {
-          width: IMG_DIM.signature.width,
-          height: IMG_DIM.signature.height,
-        },
-      }),
-    ],
-  });
+/**
+ * Bake one selection's bytes into the form `imageGrid2x` expects:
+ * downscaled to 600px PNG and gated by `assertPngOrJpegMagic`. Throws
+ * `DOCX_IMAGE_EMBED` on bad input so the export aborts before Word sees a
+ * malformed `.docx`.
+ */
+async function bakeSelectionForGrid(
+  bytes: Uint8Array,
+  imagePath: string,
+  what: string,
+): Promise<Uint8Array> {
+  if (!bytes || bytes.byteLength === 0) {
+    throw new LibError(`${what}: empty bytes`, {
+      code: 'DOCX_IMAGE_EMBED',
+      path: imagePath,
+    });
+  }
+  const downscaled = await downscaleImageToPng(bytes, DOCX_IMAGE_MAX_WIDTH);
+  assertPngOrJpegMagic(downscaled, { path: imagePath, what });
+  return downscaled;
 }
 
 /**

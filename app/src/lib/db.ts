@@ -33,10 +33,13 @@ import {
   type DayOfWeek,
   type Event,
   type EventStatus,
+  type FoldType,
   type ImageCategory,
   type ImageSelection,
   type ImageTag,
   type Signature,
+  BACKUP_SCHEMA_VERSION,
+  FOLD_TYPES,
   IMAGE_CATEGORIES,
   LibError,
 } from '../types';
@@ -54,7 +57,7 @@ import { normalizeSignature } from './signature';
  * Distinct from `BACKUP_SCHEMA_VERSION` (in `types/index.ts`): that constant
  * tags JSON envelopes for SOP 07; this one tags the on-disk IDB layout.
  */
-export const DB_VERSION = 2 as const;
+export const DB_VERSION = 3 as const;
 
 /** Stable database name. Same as POC L2; do not rename. */
 export const DB_NAME = 'shon-blaish' as const;
@@ -90,6 +93,32 @@ export type ThumbnailRecord = {
 };
 
 /**
+ * Persistent cache of the 600px PNG bytes used by `buildEventDocx` for every
+ * `ImageSelection` the user has ever picked into an event. Written by
+ * `SummaryTab.onExport` after the first successful disk read of a given
+ * `imagePath`; read by every subsequent export so the DOCX still builds even
+ * if the source file has since been moved or deleted.
+ *
+ * Keyed by `imagePath` (NFC, POSIX-relative). Bytes are always
+ * `image/png` because `docx@8.5` hard-codes the `.png` part name (see
+ * `lib/docx.ts` § "docx@8.5 part-name quirk"). Same store is also probed by
+ * `<SelectionThumbnail>` as a third fallback when the Tauri asset URL has
+ * not yet resolved (cold-start before the gallery has been opened).
+ *
+ * NOT included in the SOP 07 backup envelope — this is an ephemeral cache,
+ * the same as `thumbnails`. `BACKUP_SCHEMA_VERSION` is unchanged.
+ */
+export type SelectedImageBytesRecord = {
+  imagePath: string;
+  bytes: Uint8Array;
+  mimeType: 'image/png';
+  widthPx: number;
+  heightPx: number;
+  cachedAt: number;
+  sourceModifiedAt: number;
+};
+
+/**
  * Single-writer rule (SOP 02 § Object Stores):
  *   • `lastBackupAt`     — set ONLY by SOP 07 `exportBackup()`.
  *   • `lastScanAt`       — set ONLY by SOP 01 `scanAll()`.
@@ -109,7 +138,8 @@ export type MetaKey =
   | 'lastImportAt'
   | 'taggingComplete'
   | 'theme'                        // SOP 14 — Light/Dark theme toggle
-  | 'lastWelcomeDate';             // Phase WOW — yyyy-mm-dd of last shown welcome screen
+  | 'lastWelcomeDate'              // Phase WOW — yyyy-mm-dd of last shown welcome screen
+  | 'projectRoot';                 // 2026-05-24 — runtime-resolved absolute path to the project root
 
 type MetaRow = {
   key: MetaKey;
@@ -149,6 +179,13 @@ interface ShonBlaishDB extends DBSchema {
     indexes: {
       byUserCategory: ImageCategory;
       byTaggedAt: number;
+    };
+  };
+  selectedImageBytes: {
+    key: string;
+    value: SelectedImageBytesRecord;
+    indexes: {
+      byCachedAt: number;
     };
   };
   meta: {
@@ -231,7 +268,19 @@ export async function openDb(
             tags.createIndex('byUserCategory', 'userCategory');
             tags.createIndex('byTaggedAt', 'taggedAt');
           }
-          // Future: if (oldVersion < 3) { … } — never edit the blocks above.
+          if (oldVersion < 3) {
+            // 2026-05-25 — `selectedImageBytes`: persistent 600px-PNG cache
+            // for every `ImageSelection` the user has picked. Written by
+            // `SummaryTab.onExport` after the first successful disk read,
+            // read by subsequent exports + by `<SelectionThumbnail>` when
+            // the Tauri asset URL has not yet resolved on cold-start.
+            // Side-effect-free: only opens the store and creates the index.
+            const selBytes = db.createObjectStore('selectedImageBytes', {
+              keyPath: 'imagePath',
+            });
+            selBytes.createIndex('byCachedAt', 'cachedAt');
+          }
+          // Future: if (oldVersion < 4) { … } — never edit the blocks above.
         },
         blocked() {
           console.error(
@@ -354,18 +403,14 @@ function assertSelectionsValid(
   }
 }
 
-/** INV-04 (soft warn): napkins.color === 'אחר' should carry a free-text witness. */
-function warnNapkinsAcher(event: Event): void {
-  if (
-    event.napkins?.color === 'אחר' &&
-    !event.napkins.foldType?.trim() &&
-    !event.notes?.trim()
-  ) {
-    console.warn(
-      '[db] INV-04: napkins.color === "אחר" without foldType or notes witness',
-      { eventId: event.id },
-    );
-  }
+/**
+ * INV-04 RETIRED 2026-05-24: napkins.color picker removed. The color is now
+ * derived from designSelections and imageTags. This function is retained as
+ * a no-op for backward compatibility with existing backups but no longer
+ * emits warnings.
+ */
+function warnNapkinsAcher(_event: Event): void {
+  // No-op. INV-04 is retired.
 }
 
 /** Normalize free-text Hebrew strings on write (NFC) to keep equality stable. */
@@ -455,11 +500,24 @@ function normalizeEvent(e: Event): Event {
   // `designSelections?: ImageSelection[]`. Absent → omit the field on output
   // so v1 events that never opened the new tabs round-trip cleanly through
   // export → import without acquiring an empty array they did not have.
+  // Maintenance Log 2026-05-24: napkins.color is now optional (deprecated).
   const napkins: Event['napkins'] = {
-    color: nfc(e.napkins.color) as Event['napkins']['color'],
     fabric: nfc(e.napkins.fabric) as Event['napkins']['fabric'],
     foldType: nfc(e.napkins.foldType ?? ''),
   };
+  // Preserve optional color field from legacy backups.
+  if (e.napkins.color !== undefined) {
+    napkins.color = nfc(String(e.napkins.color));
+  }
+  // Maintenance Log 2026-05-24: optional canonical foldKind (RadioChip group).
+  // Absent (legacy backups, v1 events) → keep undefined. Present but invalid
+  // → drop to undefined so the union type stays sound. Valid → preserve.
+  if (e.napkins.foldKind !== undefined) {
+    const candidate = nfc(String(e.napkins.foldKind));
+    if ((FOLD_TYPES as readonly string[]).includes(candidate)) {
+      napkins.foldKind = candidate as FoldType;
+    }
+  }
   if (e.napkins.designSelections !== undefined) {
     napkins.designSelections = e.napkins.designSelections.map(normalizeSelection);
   }
@@ -985,6 +1043,97 @@ export async function deleteThumbnailsByCategory(
 }
 
 // ===========================================================================
+// SelectedImageBytes (DOCX-export PNG cache — see SelectedImageBytesRecord)
+// ===========================================================================
+
+/**
+ * Look up the cached 600px PNG bytes for a previously-baked image selection.
+ * Returns `undefined` if the image has not been cached yet (first export,
+ * or the cache was cleared). Callers in `SummaryTab.onExport` use this as
+ * the first step of the cache-first pipeline; `<SelectionThumbnail>` uses
+ * it as a third-stage fallback for cold-start renders before the gallery
+ * has primed the project-root sync cache.
+ */
+export async function getSelectedImageBytes(
+  imagePath: string,
+): Promise<SelectedImageBytesRecord | undefined> {
+  if (typeof imagePath !== 'string' || imagePath.length === 0) return undefined;
+  const db = await openDb();
+  try {
+    return await db.get('selectedImageBytes', nfc(imagePath));
+  } catch (cause) {
+    throw new LibError('getSelectedImageBytes failed', {
+      code: 'DB_TX',
+      path: imagePath,
+      cause,
+    });
+  }
+}
+
+/**
+ * Upsert the 600px PNG bytes for an image selection. Re-stamps `cachedAt =
+ * Date.now()` (INV-12) and NFC-normalizes the path. Bytes are stored
+ * verbatim — `SummaryTab` is responsible for handing in PNG-encoded bytes
+ * (the same ones it just embedded into the DOCX); the `mimeType` field is
+ * a marker, not a converter.
+ */
+export async function putSelectedImageBytes(
+  rec: Omit<SelectedImageBytesRecord, 'cachedAt' | 'mimeType'> & {
+    cachedAt?: number;
+    mimeType?: 'image/png';
+  },
+): Promise<void> {
+  if (!rec || typeof rec !== 'object') {
+    throw new LibError('putSelectedImageBytes: record is required', {
+      code: 'DB_CONFLICT',
+    });
+  }
+  if (!rec.bytes || rec.bytes.byteLength === 0) {
+    throw new LibError('putSelectedImageBytes: empty bytes', {
+      code: 'DB_CONFLICT',
+      path: rec.imagePath,
+    });
+  }
+  const normalized: SelectedImageBytesRecord = {
+    imagePath: nfc(rec.imagePath),
+    bytes: rec.bytes,
+    mimeType: 'image/png',
+    widthPx: typeof rec.widthPx === 'number' && rec.widthPx > 0 ? rec.widthPx : 0,
+    heightPx: typeof rec.heightPx === 'number' && rec.heightPx > 0 ? rec.heightPx : 0,
+    cachedAt: typeof rec.cachedAt === 'number' ? rec.cachedAt : nowMs(),
+    sourceModifiedAt:
+      typeof rec.sourceModifiedAt === 'number' ? rec.sourceModifiedAt : 0,
+  };
+  const db = await openDb();
+  try {
+    await db.put('selectedImageBytes', normalized);
+  } catch (cause) {
+    throw new LibError('putSelectedImageBytes failed', {
+      code: 'DB_TX',
+      path: normalized.imagePath,
+      cause,
+    });
+  }
+}
+
+/** Delete a single cached entry. Used for one-off invalidation; full
+ *  cache wipe is not currently exposed (the cache is bounded by the number
+ *  of distinct selections across all events). */
+export async function deleteSelectedImageBytes(imagePath: string): Promise<void> {
+  if (typeof imagePath !== 'string' || imagePath.length === 0) return;
+  const db = await openDb();
+  try {
+    await db.delete('selectedImageBytes', nfc(imagePath));
+  } catch (cause) {
+    throw new LibError('deleteSelectedImageBytes failed', {
+      code: 'DB_TX',
+      path: imagePath,
+      cause,
+    });
+  }
+}
+
+// ===========================================================================
 // ImageTag CRUD (SOP 12 — Image Tagging Pass)
 // ===========================================================================
 //
@@ -1079,6 +1228,24 @@ export async function deleteImageTag(imagePath: string): Promise<void> {
 }
 
 /**
+ * Clear ALL ImageTag records from the store. Used by Settings → "תייג מחדש
+ * את כל הספרייה" when Shon wants to re-run the SOP 12 tagging pass with new
+ * vocabulary. Callable ONLY after a safety backup has been written to disk;
+ * the caller (Settings.tsx) is responsible for backup → clear → setMeta(
+ * 'taggingComplete', false) → reload() sequence.
+ */
+export async function clearImageTags(): Promise<void> {
+  const db = await openDb();
+  try {
+    const tx = db.transaction('imageTags', 'readwrite');
+    await tx.objectStore('imageTags').clear();
+    await tx.done;
+  } catch (cause) {
+    throw new LibError('clearImageTags failed', { code: 'DB_TX', cause });
+  }
+}
+
+/**
  * Count of tagged images. Used by the SOP 12 progress UI on resume to show
  * `<count> / <total>` without materializing the full array. O(1) per IDB
  * primary-store metadata.
@@ -1133,6 +1300,7 @@ const META_KEYS: ReadonlySet<MetaKey> = new Set<MetaKey>([
   'taggingComplete',
   'theme',
   'lastWelcomeDate',
+  'projectRoot',
 ]);
 
 function assertMetaKey(key: string): asserts key is MetaKey {
@@ -1298,14 +1466,17 @@ export async function importAll(
   if (!payload || typeof payload !== 'object') {
     throw new LibError('importAll: payload is required', { code: 'DB_CONFLICT' });
   }
-  // Accept the live DB_VERSION OR a v1 payload (SOP 07 v1→v2 compat).
-  // Anything else is a stale or future-version backup — refuse.
+  // Accept the live DB_VERSION, the BACKUP_SCHEMA_VERSION (which decouples
+  // from DB_VERSION as of 2026-05-25 — `selectedImageBytes` is an ephemeral
+  // cache, intentionally NOT bumped into the backup envelope), or a v1
+  // payload (SOP 07 v1→v2 compat). Anything else is stale/future — refuse.
   if (
     payload.schemaVersion !== DB_VERSION &&
+    payload.schemaVersion !== BACKUP_SCHEMA_VERSION &&
     payload.schemaVersion !== 1
   ) {
     throw new LibError(
-      `importAll: schemaVersion mismatch (got ${payload.schemaVersion}, expected ${DB_VERSION} or 1)`,
+      `importAll: schemaVersion mismatch (got ${payload.schemaVersion}, expected ${DB_VERSION}, ${BACKUP_SCHEMA_VERSION}, or 1)`,
       { code: 'DB_CONFLICT' },
     );
   }

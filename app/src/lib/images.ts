@@ -919,6 +919,209 @@ export function selectionPathToSrc(
   }
 }
 
+/**
+ * Async variant of `selectionPathToSrc` that ensures the project root is
+ * loaded before converting the path to a file URL. This is the preferred API
+ * for React components that can tolerate async initialization (e.g.,
+ * `SelectionThumbnail` on a freshly loaded event from IndexedDB before the
+ * gallery has been opened).
+ *
+ * Returns `null` if the path validation fails or the file system cannot
+ * resolve the URL. Same validation defenses as the sync variant.
+ */
+export async function selectionPathToSrcAsync(
+  imagePath: string,
+  fs: FsProvider = tauriFsProvider,
+): Promise<string | null> {
+  if (typeof imagePath !== 'string' || imagePath.length === 0) return null;
+
+  // Prime the cache if needed
+  if (cachedSyncRoot === null) {
+    try {
+      cachedSyncRoot = await getProjectRoot();
+    } catch {
+      return null;
+    }
+  }
+
+  // Now we can delegate to the sync path (cache is primed)
+  return selectionPathToSrc(imagePath, fs);
+}
+
+// ===========================================================================
+// Downscale to PNG (DOCX embedding + selectedImageBytes cache)
+// ===========================================================================
+
+/**
+ * Downscale `originalBytes` (any browser-decodable image: JPEG/PNG/WebP) to a
+ * PNG `Uint8Array` whose largest edge is ≤ `maxWidth` pixels. Used by:
+ *
+ *   • `lib/docx.ts` — embeds 600px PNG into the generated DOCX. The choice of
+ *     PNG here is NOT cosmetic: `docx@8.5.0` hard-codes every `ImageRun` part
+ *     name as `word/media/<uuid>.png` (see `node_modules/docx/build/index.cjs`
+ *     line 11122 — `__publicField(this, "key", `${uniqueId()}.png`)`), and
+ *     `[Content_Types].xml` only declares `Default Extension="png"
+ *     ContentType="image/png"`. Embedding JPEG bytes inside a `.png`-keyed
+ *     part triggers Word's "this file is corrupt" dialog. PNG bytes inside a
+ *     `.png`-keyed part are correct and Word accepts them.
+ *
+ *   • `components/event/SummaryTab.tsx` — bakes a 600px PNG once per unique
+ *     selection during export, persists it to the `selectedImageBytes` IDB
+ *     store, and reuses it on the next export (or on a cold restart) so the
+ *     DOCX still builds even if the source file is moved or deleted.
+ *
+ * Returns the original bytes if any step of the canvas pipeline is
+ * unavailable (no `createImageBitmap`, no `document`, no `2d` context). The
+ * caller should treat that fallback as best-effort: the bytes are still
+ * embeddable iff they were already PNG/JPEG to begin with — and the DOCX
+ * pipeline gates that with a magic-byte check.
+ */
+export async function downscaleImageToPng(
+  originalBytes: Uint8Array,
+  maxWidth: number,
+): Promise<Uint8Array> {
+  if (typeof createImageBitmap !== 'function') {
+    return originalBytes;
+  }
+  const blob = new Blob([originalBytes]);
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch {
+    return originalBytes;
+  }
+
+  const w = bitmap.width;
+  const h = bitmap.height;
+  if (w === 0 || h === 0) {
+    bitmap.close?.();
+    return originalBytes;
+  }
+
+  const scale = Math.min(1, maxWidth / w);
+  const targetW = Math.max(1, Math.floor(w * scale));
+  const targetH = Math.max(1, Math.floor(h * scale));
+
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    bitmap.close?.();
+    return originalBytes;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bitmap.close?.();
+    return originalBytes;
+  }
+
+  try {
+    ctx.drawImage(bitmap as unknown as CanvasImageSource, 0, 0, targetW, targetH);
+  } catch {
+    bitmap.close?.();
+    return originalBytes;
+  }
+  bitmap.close?.();
+
+  let dataUrl: string;
+  try {
+    // PNG (no quality arg). `image/png` re-encodes regardless of source
+    // format, so JPEG/WebP inputs become PNG outputs. This is the whole
+    // point of this function: produce bytes safe for `docx@8.5` ImageRun.
+    dataUrl = canvas.toDataURL('image/png');
+  } catch {
+    return originalBytes;
+  }
+
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return originalBytes;
+  const base64 = dataUrl.slice(comma + 1);
+  try {
+    const bin = atob(base64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) {
+      arr[i] = bin.charCodeAt(i);
+    }
+    return arr;
+  } catch {
+    return originalBytes;
+  }
+}
+
+/** Pixel dimensions of a downscaled image, used by the IDB cache record so
+ *  callers don't have to re-decode the bytes to learn the size. */
+export type ImageDimensions = { widthPx: number; heightPx: number };
+
+/**
+ * Variant of `downscaleImageToPng` that also returns the rendered pixel
+ * dimensions. Avoids a second `createImageBitmap` call in `SummaryTab` when
+ * we want to persist `widthPx`/`heightPx` alongside the bytes in the
+ * `selectedImageBytes` IDB store.
+ */
+export async function downscaleImageToPngWithSize(
+  originalBytes: Uint8Array,
+  maxWidth: number,
+): Promise<{ bytes: Uint8Array } & Partial<ImageDimensions>> {
+  if (typeof createImageBitmap !== 'function') {
+    return { bytes: originalBytes };
+  }
+  const blob = new Blob([originalBytes]);
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch {
+    return { bytes: originalBytes };
+  }
+  const w = bitmap.width;
+  const h = bitmap.height;
+  if (w === 0 || h === 0) {
+    bitmap.close?.();
+    return { bytes: originalBytes };
+  }
+  const scale = Math.min(1, maxWidth / w);
+  const targetW = Math.max(1, Math.floor(w * scale));
+  const targetH = Math.max(1, Math.floor(h * scale));
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    bitmap.close?.();
+    return { bytes: originalBytes };
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bitmap.close?.();
+    return { bytes: originalBytes };
+  }
+  try {
+    ctx.drawImage(bitmap as unknown as CanvasImageSource, 0, 0, targetW, targetH);
+  } catch {
+    bitmap.close?.();
+    return { bytes: originalBytes };
+  }
+  bitmap.close?.();
+  let dataUrl: string;
+  try {
+    dataUrl = canvas.toDataURL('image/png');
+  } catch {
+    return { bytes: originalBytes };
+  }
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return { bytes: originalBytes, widthPx: targetW, heightPx: targetH };
+  const base64 = dataUrl.slice(comma + 1);
+  try {
+    const bin = atob(base64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) {
+      arr[i] = bin.charCodeAt(i);
+    }
+    return { bytes: arr, widthPx: targetW, heightPx: targetH };
+  } catch {
+    return { bytes: originalBytes, widthPx: targetW, heightPx: targetH };
+  }
+}
+
 // ===========================================================================
 // Test hooks
 // ===========================================================================

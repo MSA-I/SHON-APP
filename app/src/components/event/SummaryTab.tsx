@@ -10,8 +10,8 @@
 // `events/<event-id>/plan.docx`. Backup roundtrip is fired off in parallel.
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { FileDown, Mail, MessageCircle } from 'lucide-react';
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
+import { FileDown, FileText, Mail, MessageCircle } from 'lucide-react';
+import { openPath, openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '../ui/Button';
 import { useEvent } from '../../contexts/EventContext';
@@ -19,9 +19,19 @@ import { useToast } from '../../contexts/ToastContext';
 import { buildEventDocx } from '../../lib/docx';
 import { exportBackup } from '../../lib/backup';
 import { getProjectRoot } from '../../lib/config';
-import { getEventDir, getEventDocxPath } from '../../lib/paths';
+import { getEventDirByName, getEventDocxPathByName } from '../../lib/paths';
 import { tauriFsExtras, tauriFsProvider } from '../../lib/tauri-fs';
+import { downscaleImageToPngWithSize } from '../../lib/images';
+import { getSelectedImageBytes, putSelectedImageBytes } from '../../lib/db';
 import type { DocxBuildInput, ImageSelection, Signature } from '../../types';
+
+// 600px is the same MAX_WIDTH used by `lib/docx.ts`. Keeping the constant
+// duplicated here is cheaper than exporting it (Layer 3 boundary stays
+// clean: SummaryTab does not import internal docx symbols).
+const SELECTION_BAKE_MAX_WIDTH = 600;
+
+// Module-level cache for the logo PNG bytes (loaded once, reused for every export).
+let logoPngBytesCache: Uint8Array | null = null;
 
 import { ChipLabel, SectionHeader } from './EventDetailsTab';
 import { SignaturePad } from '../signature/SignaturePad';
@@ -64,31 +74,109 @@ export function SummaryTab(): ReactNode {
     }
   }
 
+  async function onOpenFile(docPath: string) {
+    try {
+      // Use openPath to open the DOCX in the system default app (Word)
+      await openPath(docPath);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[summary] open file failed', err);
+      // Fallback: reveal in Explorer so user can double-click manually
+      try {
+        await revealItemInDir(docPath);
+        toast({ kind: 'success', message: 'הקובץ נפתח בסייר' });
+      } catch (revealErr) {
+        toast({ kind: 'error', message: errMessage(revealErr, 'פתיחת הקובץ נכשלה') });
+      }
+    }
+  }
+
   async function onExport() {
     if (!ev || !client) return;
     setState({ kind: 'building' });
     try {
       // SOP 03 § Embedded Images + claude.md Behavioral Rule #2: read each
-      // selected image in place from the project root and hand the bytes to
-      // buildEventDocx. docx.ts throws DOCX_IMAGE_EMBED on any missing entry
-      // ("we never silently skip a chosen image"), so failed reads must be
-      // surfaced to the user before docx.ts is called.
+      // selected image in place from the project root, downscale to 600px
+      // PNG, persist into the `selectedImageBytes` IDB cache, and hand the
+      // bytes to `buildEventDocx`. The cache-first pipeline (2026-05-25)
+      // means re-export survives source-file moves and cold-restart, and a
+      // re-opened app can rebuild the same DOCX without re-reading the
+      // disk.
       const allSelections: ImageSelection[] = [
         ...ev.tableDesignSelections,
         ...ev.chuppah.designSelections,
+        ...(ev.napkins.designSelections ?? []),
+        ...(ev.upgrades.designSelections ?? []),
       ];
-      // Dedupe by imagePath — the same image could (in theory) appear in both
-      // lists; reading twice would be wasted I/O.
+      // Dedupe by imagePath — the same image could (in theory) appear in
+      // multiple lists; baking twice would waste both I/O and CPU.
       const uniquePaths = Array.from(
         new Set(allSelections.map((s) => s.imagePath)),
       );
 
       const root = await getProjectRoot();
+
+      // Per-path cache-first pipeline. Each path tries (1) the IDB cache
+      // first, (2) a fresh disk read + bake + persist if the cache misses,
+      // and (3) the cache as a final fallback if the disk read failed but
+      // we have a previously-baked record. Only paths where ALL stages
+      // miss show up in `failed[]`.
       const reads = await Promise.allSettled(
         uniquePaths.map(async (relPath) => {
+          // Stage 1: IDB cache hit → reuse without touching disk.
+          let cached: Awaited<ReturnType<typeof getSelectedImageBytes>>;
+          try {
+            cached = await getSelectedImageBytes(relPath);
+          } catch {
+            cached = undefined;
+          }
+          if (cached && cached.bytes && cached.bytes.byteLength > 0) {
+            return { relPath, bytes: cached.bytes };
+          }
+
+          // Stage 2: read from disk + bake to 600px PNG + persist.
           const absPath = joinRootPosix(root, relPath);
-          const bytes = await tauriFsProvider.readFile(absPath);
-          return { relPath, bytes };
+          let raw: Uint8Array;
+          try {
+            raw = await tauriFsProvider.readFile(absPath);
+          } catch (diskErr) {
+            // Stage 3: disk read failed — was the file moved/deleted? If
+            // we have a stale cache entry use it (this is exactly the
+            // "files were renamed since selection" case the user asked
+            // us to handle); otherwise re-throw so it counts as failed.
+            if (cached && cached.bytes && cached.bytes.byteLength > 0) {
+              return { relPath, bytes: cached.bytes };
+            }
+            throw diskErr;
+          }
+
+          // Bake to 600px PNG. This is the SAME function `lib/docx.ts`
+          // calls internally, so the bytes we persist match what `docx`
+          // would have produced — no double-baking on subsequent exports.
+          let baked: Awaited<ReturnType<typeof downscaleImageToPngWithSize>>;
+          try {
+            baked = await downscaleImageToPngWithSize(raw, SELECTION_BAKE_MAX_WIDTH);
+          } catch {
+            // Canvas pipeline unavailable — pass raw bytes through; docx.ts
+            // will gate them with the magic-byte check.
+            baked = { bytes: raw };
+          }
+
+          // Persist. Don't fail the export on a cache write hiccup —
+          // we still have the bytes in memory.
+          try {
+            await putSelectedImageBytes({
+              imagePath: relPath,
+              bytes: baked.bytes,
+              widthPx: baked.widthPx ?? 0,
+              heightPx: baked.heightPx ?? 0,
+              sourceModifiedAt: 0,
+            });
+          } catch {
+            // eslint-disable-next-line no-console
+            console.warn('[summary] selectedImageBytes write failed', relPath);
+          }
+          return { relPath, bytes: baked.bytes };
         }),
       );
 
@@ -114,6 +202,9 @@ export function SummaryTab(): ReactNode {
         return;
       }
 
+      // Load logo PNG (cached module-level; on first call, rasterizes the SVG)
+      const logoPng = await loadLogoPng();
+
       const input: DocxBuildInput = {
         client,
         event: ev,
@@ -123,17 +214,26 @@ export function SummaryTab(): ReactNode {
         },
         signature: ev.signature,
         imageBytes,
+        logoPngBytes: logoPng ?? undefined,
       };
 
       const bytes = await buildEventDocx(input);
-      // Maintenance Log 2026-05-21: ensure the events/<id>/ directory exists
-      // before atomicWriteFile. The Tauri FS plugin does NOT auto-create
-      // parent directories — without this mkdir, the .tmp write fails on
-      // first-time export with "atomicWriteFile failed". `tauriFsProvider.
-      // ensureDir` runs `mkdir -p` (recursive: true) inside the project root.
-      const eventDir = await getEventDir(ev.id);
+      // Maintenance Log 2026-05-25: the per-event folder + filename are now
+      // human-readable (`<couple-names>_<yyyy-mm-dd>_<id8>`) instead of the
+      // bare UUID. Shon asked to be able to browse `events/` and recognize
+      // each plan without opening it. `getEventDirByName` is a pure helper
+      // over `paths.buildEventFolderBasename` — NFC-normalises Hebrew, strips
+      // Windows-forbidden chars, truncates, and disambiguates with the
+      // first 8 chars of the eventId so two events for the same couple on
+      // the same date never collide.
+      const dirInput = {
+        coupleNames: client.coupleNames,
+        date: ev.date,
+        eventId: ev.id,
+      };
+      const eventDir = await getEventDirByName(dirInput);
       await tauriFsProvider.ensureDir(eventDir);
-      const target = await getEventDocxPath(ev.id);
+      const target = await getEventDocxPathByName(dirInput);
       await tauriFsExtras.atomicWriteFile(target, bytes);
 
       // SOP 07: any auto-snapshot is fired off in the background — failures here
@@ -144,6 +244,14 @@ export function SummaryTab(): ReactNode {
       });
 
       setState({ kind: 'done', path: target });
+
+      // Best-effort: open the file in the system default app (Word). Failure is
+      // non-fatal — the user can use the "פתח קובץ" button below.
+      void openPath(target).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[summary] auto-open failed', err);
+      });
+
       toast({ kind: 'success', message: 'מסמך Word נוצר בהצלחה' });
     } catch (err) {
       const message = errMessage(err, 'יצירת המסמך נכשלה');
@@ -184,7 +292,6 @@ export function SummaryTab(): ReactNode {
 
       {/* ── Napkins + reception ───────────────────────────────────────── */}
       <SummaryBlock label="מפיות וקבלת פנים">
-        <KeyValue k="צבע" v={ev.napkins.color} />
         <KeyValue k="בד" v={ev.napkins.fabric} />
         <KeyValue k="קיפול" v={ev.napkins.foldType || '—'} />
         <KeyValue k="קבלת פנים ריזורט" v={ev.reception.atResort ? 'כן' : 'לא'} />
@@ -297,6 +404,14 @@ export function SummaryTab(): ReactNode {
               className="flex flex-row-reverse gap-3 mt-2"
               data-testid="export-share-row"
             >
+              <Button
+                variant="primary"
+                onClick={() => onOpenFile(state.path)}
+                testId="open-file-button"
+                icon={<FileText size={16} aria-hidden="true" />}
+              >
+                פתח קובץ
+              </Button>
               <Button
                 variant="primary"
                 onClick={() => onShareEmail(state.path)}
@@ -558,4 +673,98 @@ function normalizeIsraeliPhone(raw: string): string {
   // Anything else (already-international foreign number, malformed, etc.)
   // is returned as-is — wa.me will reject and fall through to the chooser.
   return digits;
+}
+
+/**
+ * Load the logo SVG (assets/logo.svg) and rasterize it to a PNG Uint8Array.
+ * The result is cached module-level so repeated exports reuse the same bytes.
+ *
+ * Steps:
+ *   1. Fetch the SVG via a relative URL (the Vite bundler serves assets/ as /assets/).
+ *   2. Parse the SVG string to extract the viewBox dimensions.
+ *   3. Create an offscreen canvas with 300x100px target dimensions.
+ *   4. Draw the SVG into an Image element and render it onto the canvas.
+ *   5. Convert canvas → PNG dataURL → Uint8Array.
+ *
+ * Falls back to `null` (no logo) if any step fails (fetch error, parse error,
+ * canvas unavailable in the WebView2 runtime, etc.). The caller (buildEventDocx)
+ * gracefully skips the logo when `logoPngBytes` is null.
+ */
+async function loadLogoPng(): Promise<Uint8Array | null> {
+  if (logoPngBytesCache !== null) return logoPngBytesCache;
+
+  try {
+    // Behavioral Rule #13: DOCX is always light-theme → use logo.svg (dark on white)
+    const svgResp = await fetch('/assets/logo.svg');
+    if (!svgResp.ok) return null;
+    const svgText = await svgResp.text();
+
+    // Extract viewBox from the SVG to preserve aspect ratio
+    const vbMatch = /viewBox=["']([^"']+)["']/.exec(svgText);
+    let svgW = 1254; // fallback from the actual SVG
+    let svgH = 1254;
+    if (vbMatch) {
+      const parts = vbMatch[1].split(/\s+/);
+      if (parts.length === 4) {
+        svgW = parseFloat(parts[2]) || svgW;
+        svgH = parseFloat(parts[3]) || svgH;
+      }
+    }
+
+    // Target dimensions for the PNG
+    const targetW = 300;
+    const targetH = 100;
+
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+      return null;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    // White background per Behavioral Rule #13
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, targetW, targetH);
+
+    // Create an Image element to hold the SVG
+    const img = new Image();
+    const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
+    const svgUrl = URL.createObjectURL(svgBlob);
+
+    // Wait for the image to load
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('SVG load failed'));
+      img.src = svgUrl;
+    });
+
+    // Draw the SVG onto the canvas with aspect-fit
+    const scale = Math.min(targetW / svgW, targetH / svgH);
+    const drawW = svgW * scale;
+    const drawH = svgH * scale;
+    const offsetX = (targetW - drawW) / 2;
+    const offsetY = (targetH - drawH) / 2;
+    ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+
+    URL.revokeObjectURL(svgUrl);
+
+    // Convert canvas → PNG dataURL → Uint8Array
+    const dataUrl = canvas.toDataURL('image/png');
+    const comma = dataUrl.indexOf(',');
+    if (comma < 0) return null;
+    const base64 = dataUrl.slice(comma + 1);
+    const bin = atob(base64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) {
+      arr[i] = bin.charCodeAt(i);
+    }
+
+    logoPngBytesCache = arr;
+    return arr;
+  } catch {
+    return null;
+  }
 }

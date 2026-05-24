@@ -22,15 +22,19 @@ import { FatalBanner } from './components/shell/FatalBanner';
 import { BootSplash } from './components/shell/BootSplash';
 import { AppBar } from './components/shell/AppBar';
 import { WelcomeScreen } from './components/shell/WelcomeScreen';
+import { ProjectRootPicker } from './components/shell/ProjectRootPicker';
 import { ClientList } from './components/client';
 import { TaggingPass } from './components/tagging/TaggingPass';
 import { EventTabs } from './components/event';
 import { Settings } from './components/settings/Settings';
 import { Button, Ornament } from './components/ui';
 import * as db from './lib/db';
+import { discoverProjectRoot } from './lib/config';
 
 type AppView =
   | { kind: 'boot' }
+  | { kind: 'discovering' }
+  | { kind: 'pick-root'; tried: string[] }
   | { kind: 'tagging' }
   | { kind: 'welcome' }
   | { kind: 'home' }
@@ -73,19 +77,39 @@ function AppShell() {
   const [view, setView] = useState<AppView>({ kind: 'boot' });
   const [bootError, setBootError] = useState<string | null>(null);
 
-  // Boot sequence — read meta.taggingComplete + meta.lastWelcomeDate then route.
-  // Tagging gate (BehavioralRule #11) wins; if cleared we check whether today's
-  // welcome screen has been shown yet (Phase WOW). Same-day → straight to Home.
+  // Boot sequence (claude.md Maintenance Log 2026-05-24):
+  //  0. Discover project root — sticky, persisted to meta.projectRoot. If not
+  //     found auto, surface manual picker BEFORE anything else; the rest of
+  //     the app cannot function without a valid root (scans return empty).
+  //  1. Read meta.taggingComplete (Behavioral Rule #11). If not, run pass.
+  //  2. Read meta.lastWelcomeDate. Same-day → home, else welcome.
+  //
+  // `bootSeq` is bumped after the user manually picks a root, forcing the
+  // effect to re-run from the top.
+  const [bootSeq, setBootSeq] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
+        // Step 0 — discover project root.
+        if (!cancelled) setView({ kind: 'discovering' });
+        const result = await discoverProjectRoot();
+        if (cancelled) return;
+        if (result.kind === 'not-found') {
+          setView({ kind: 'pick-root', tried: result.tried });
+          return;
+        }
+
+        // Step 1 — tagging gate.
         const complete = await db.getMeta('taggingComplete');
         if (cancelled) return;
         if (complete !== true) {
           setView({ kind: 'tagging' });
           return;
         }
+
+        // Step 2 — welcome / home.
         const lastWelcome = await db.getMeta('lastWelcomeDate');
         if (cancelled) return;
         if (lastWelcome === todayLocalIso()) {
@@ -94,7 +118,7 @@ function AppShell() {
           setView({ kind: 'welcome' });
         }
       } catch (err) {
-        console.error('[boot] meta read failed', err);
+        console.error('[boot] startup failed', err);
         if (!cancelled) {
           setBootError('פתיחת מסד הנתונים נכשלה');
         }
@@ -103,7 +127,7 @@ function AppShell() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bootSeq]);
 
   if (bootError) {
     return (
@@ -117,6 +141,24 @@ function AppShell() {
 
   if (themeHydrating || view.kind === 'boot') {
     return <BootSplash phase={themeHydrating ? 'reading-meta' : 'opening-db'} />;
+  }
+
+  if (view.kind === 'discovering') {
+    return <BootSplash phase="discovering-root" />;
+  }
+
+  if (view.kind === 'pick-root') {
+    return (
+      <ProjectRootPicker
+        triedPaths={view.tried}
+        onPicked={() => {
+          // Re-run the boot sequence from Step 0; discovery will now find the
+          // persisted root and skip straight through.
+          setView({ kind: 'boot' });
+          setBootSeq((n) => n + 1);
+        }}
+      />
+    );
   }
 
   if (view.kind === 'tagging') {
