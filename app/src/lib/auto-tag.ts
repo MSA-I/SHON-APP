@@ -423,6 +423,12 @@ export type AutoTagProgress = (
 export type AutoTagOptions = {
   onProgress?: AutoTagProgress;
   signal?: AbortSignal;
+  /**
+   * Skip the pixel-colour heuristic (no thumbnail bake). Only filename +
+   * visual-range heuristics run — completes in < 1 s even for 884 images.
+   * Used by Gallery when tagging was previously skipped via "דלג זמנית".
+   */
+  nameOnly?: boolean;
 };
 
 const CHUNK_SIZE = 8;
@@ -440,7 +446,7 @@ export async function autoTagLibrary(
   images: readonly ImageMetadata[],
   opts: AutoTagOptions = {},
 ): Promise<AutoTagResult> {
-  const { onProgress, signal } = opts;
+  const { onProgress, signal, nameOnly = false } = opts;
   const result: AutoTagResult = { written: 0, skipped: 0, failed: 0 };
   const total = images.length;
   if (total === 0) return result;
@@ -460,15 +466,12 @@ export async function autoTagLibrary(
           ]);
 
           // Pixel heuristic only for actual images (videos return null from
-          // getOrBakeThumbnail). The thumb cache makes this near-free on
-          // warm runs; on cold runs the bake itself is bounded by SOP 02.
-          if (image.kind === 'image') {
+          // getOrBakeThumbnail). Skip when nameOnly=true (Gallery fast-pass).
+          if (!nameOnly && image.kind === 'image') {
             let blob: Blob | null = null;
             try {
               blob = await getOrBakeThumbnail(image);
             } catch {
-              // thumbnail bake failure is non-fatal — fall through with what
-              // we got from the filename.
               blob = null;
             }
             if (blob) {

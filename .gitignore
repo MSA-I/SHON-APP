@@ -67,6 +67,9 @@ app/src-tauri/gen/
 *.msi
 *.nsis
 
+# Allow installer builds in releases/
+!releases/*.exe
+
 # OS / editor
 .DS_Store
 Thumbs.db

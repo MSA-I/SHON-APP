@@ -23,6 +23,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useToast } from '../../contexts/ToastContext';
 import { listImageTags } from '../../lib/db';
 import { getOrBakeThumbnail, scanAll } from '../../lib/images';
+import { autoTagLibrary } from '../../lib/auto-tag';
 import {
   IMAGE_CATEGORIES,
   type ImageCategory,
@@ -182,52 +183,60 @@ export function Gallery({
   );
 
   // -----------------------------------------------------------------------
-  // Library scan — runs once on mount. The gallery is a pure consumer per
-  // SOP 05 § Source Data, but on a cold open we still need *something* in
-  // memory; in production this state would come from EventContext. The
-  // streaming `onCategoryDone` callback gives the user partial results
-  // before the slow categories (520 images) finish.
+  // Library scan — runs once on mount.
+  // After the scan, if there are no imageTags in IDB yet (user pressed
+  // "דלג זמנית" during the tagging pass), we run a fast name-only auto-tag
+  // pass so the sub-category strip is populated.
   // -----------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      // Tags load in parallel with the scan — they don't gate rendering and
-      // a failure here just disables the sub-category strip.
-      void (async () => {
-        try {
-          const tags = await listImageTags();
-          if (cancelled) return;
-          const map = new Map<string, ImageTag>();
-          for (const t of tags) map.set(t.imagePath, t);
-          setTagsByPath(map);
-        } catch (err) {
-          console.error('[gallery] listImageTags failed', err);
-        }
-      })();
-
       try {
-        const result = await scanAll({
-          onCategoryDone: (category, count) => {
-            if (cancelled || count === null) return;
-            // We re-set the same Map ref to a clone so React sees the change.
-            setByCategory((prev) => {
-              const next = new Map(prev);
-              // The scan stream itself doesn't pass items in this callback;
-              // we only mark "this category resolved" — full items arrive
-              // from the awaited `result` below.
-              if (!next.has(category)) next.set(category, []);
-              return next;
-            });
-          },
-        });
+        const [scanResult, existingTags] = await Promise.all([
+          scanAll({
+            onCategoryDone: (category, count) => {
+              if (cancelled || count === null) return;
+              setByCategory((prev) => {
+                const next = new Map(prev);
+                if (!next.has(category)) next.set(category, []);
+                return next;
+              });
+            },
+          }),
+          listImageTags().catch((err) => {
+            console.error('[gallery] listImageTags failed', err);
+            return [] as ImageTag[];
+          }),
+        ]);
         if (cancelled) return;
-        setByCategory(new Map(result.byCategory));
+
+        const allImages = Array.from(scanResult.byCategory.values()).flat();
+
+        // Fast auto-tag pass (name+visual-range only, no pixel decode) when
+        // the store is empty — fills the sub-category strip without blocking.
+        let tags = existingTags;
+        if (tags.length === 0 && allImages.length > 0) {
+          try {
+            await autoTagLibrary(allImages, { nameOnly: true });
+          } catch (err) {
+            console.error('[gallery] fast auto-tag failed', err);
+          }
+          if (cancelled) return;
+          try {
+            tags = await listImageTags();
+          } catch (err) {
+            console.error('[gallery] listImageTags after auto-tag failed', err);
+          }
+        }
+
+        if (cancelled) return;
+        const map = new Map<string, ImageTag>();
+        for (const t of tags) map.set(t.imagePath, t);
+        setTagsByPath(map);
+
+        setByCategory(new Map(scanResult.byCategory));
         setScanComplete(true);
       } catch (err) {
-        // Catastrophic failure (e.g. project root missing). Keep the gallery
-        // open so the user can still close it; surface a console error for
-        // diagnostics. SOP 05 § Failure Modes covers per-category failures
-        // already inside `scanAll`.
         console.error('[gallery] scanAll failed', err);
         if (!cancelled) setScanComplete(true);
       }
@@ -593,28 +602,31 @@ function Tile({
   onToggle,
   onOpen,
 }: TileProps) {
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  // Use session-scoped blob URL cache to avoid re-fetching from IDB on every
+  // virtualizer unmount/remount cycle. URLs are created once and live for the
+  // session — this is safe because the gallery shows the same files per open.
+  const [thumbUrl, setThumbUrl] = useState<string | null>(
+    () => blobUrlCache.get(image.path) ?? null,
+  );
   const [errored, setErrored] = useState(false);
 
-  // Lazy thumbnail load — fetches the WebP blob from IndexedDB (or bakes it)
-  // and creates an object URL. We revoke on unmount to avoid leaking.
   useEffect(() => {
+    // Already in cache — nothing to do.
+    if (blobUrlCache.has(image.path)) {
+      setThumbUrl(blobUrlCache.get(image.path)!);
+      return;
+    }
     let cancelled = false;
-    let createdUrl: string | null = null;
     setErrored(false);
-    setThumbUrl(null);
 
     void (async () => {
       try {
         const blob = await getOrBakeThumbnail(image);
         if (cancelled) return;
-        if (!blob) {
-          // videos return null → render a placeholder, not an error
-          setThumbUrl(null);
-          return;
-        }
-        createdUrl = URL.createObjectURL(blob);
-        setThumbUrl(createdUrl);
+        if (!blob) return; // video — keep null
+        const url = URL.createObjectURL(blob);
+        blobUrlCache.set(image.path, url);
+        setThumbUrl(url);
       } catch (err) {
         if (!cancelled) {
           console.error('[gallery] thumbnail failed for', image.path, err);
@@ -623,11 +635,10 @@ function Tile({
       }
     })();
 
-    return () => {
-      cancelled = true;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
-    };
-  }, [image]);
+    return () => { cancelled = true; };
+    // image.path is the stable key; re-run only if the image identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image.path]);
 
   // Click vs. selection — single click toggles selection (mockup mirror);
   // a "long press" or right-click would open the lightbox in a fuller build.
@@ -805,14 +816,22 @@ function EmptyState({
 }
 
 // ---------------------------------------------------------------------------
+// Blob URL cache — shared across all Tile renders so that virtualizer
+// unmount/remount cycles don't re-fetch from IDB. The Map lives outside the
+// component so it persists across gallery open/close in the same session.
+// Keys are ImageMetadata.path; values are object URLs (never revoked while
+// the gallery is open — GC will collect them after window close or reload).
+// ---------------------------------------------------------------------------
+const blobUrlCache = new Map<string, string>();
+
+// ---------------------------------------------------------------------------
 // VirtualGrid — windowed 4-column tile grid (fixes 60fps jank on 520-image
 // categories like "מפות מפיות"). Only the visible rows + small overscan are
 // mounted; the rest are placeholder space inside an absolutely-sized inner div.
 // ---------------------------------------------------------------------------
 
 const COLUMNS = 4;
-const ROW_GAP_PX = 16;       // matches Tailwind `gap-4`
-const TILE_HEIGHT_PX = 220;  // approx aspect-square tile in 4-col layout @1440 viewport
+const ROW_GAP_PX = 16; // matches Tailwind `gap-4`
 
 function VirtualGrid({
   scanComplete,
@@ -831,21 +850,28 @@ function VirtualGrid({
   onToggle: (image: ImageMetadata) => void;
   onOpen: (image: ImageMetadata) => void;
 }) {
-  const scrollRef = useRef<HTMLElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const rowCount = Math.ceil(visibleImages.length / COLUMNS);
 
+  // measureElement lets the virtualizer learn the actual rendered row height
+  // after the first paint — eliminates the fixed-constant estimation problem.
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => TILE_HEIGHT_PX + ROW_GAP_PX,
-    overscan: 4,
+    estimateSize: () => 300 + ROW_GAP_PX,
+    overscan: 3,
+    measureElement:
+      typeof window !== 'undefined' && window.ResizeObserver
+        ? (el) => el.getBoundingClientRect().height
+        : undefined,
   });
 
   return (
-    <main
+    <div
       ref={scrollRef}
       data-testid="gallery-grid-scroll"
       className="flex-1 overflow-y-auto px-16 py-8"
+      style={{ contain: 'strict' }}
     >
       {visibleImages.length === 0 ? (
         <EmptyState
@@ -864,21 +890,19 @@ function VirtualGrid({
           {virtualizer.getVirtualItems().map((vRow) => {
             const start = vRow.index * COLUMNS;
             const rowImages = visibleImages.slice(start, start + COLUMNS);
-            // Designer-Reviewer P0 fix: gate the entrance animation on
-            // ROW index (not item index) so virtualizer-recycled tiles
-            // don't re-stagger when the user scrolls back to the top.
-            // Rows 0..3 = first viewport ≈ 16 tiles total.
             const enableEntrance = vRow.index < 4;
             return (
               <div
                 key={vRow.key}
+                data-index={vRow.index}
+                ref={virtualizer.measureElement}
                 style={{
                   position: 'absolute',
                   top: 0,
                   left: 0,
                   right: 0,
                   transform: `translateY(${vRow.start}px)`,
-                  height: `${TILE_HEIGHT_PX}px`,
+                  paddingBottom: `${ROW_GAP_PX}px`,
                 }}
                 className="grid grid-cols-4 gap-4"
               >
@@ -907,7 +931,7 @@ function VirtualGrid({
           <span className="font-serif text-h2">❖</span>
         </div>
       ) : null}
-    </main>
+    </div>
   );
 }
 
