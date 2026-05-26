@@ -47,7 +47,10 @@ export type AppBarProps = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-const BAR_HEIGHT = 60;
+// Maintenance Log 2026-05-26-pm: bar height bumped 60 → 80 to accommodate
+// the enlarged brand mark (the SB monogram + crown reads as a tiny dot at
+// 32px; the user asked for it to be visible at proper size).
+const BAR_HEIGHT = 80;
 
 const barStyle: CSSProperties = {
   height: BAR_HEIGHT,
@@ -137,38 +140,62 @@ export function AppBar({ breadcrumb, showThemeToggle = true, onLogoClick }: AppB
 
 // ─── Brand mark ───────────────────────────────────────────────────────────────
 //
-// Renders `/logo-light.svg` (cream variant for the dark UI). The asset is
-// mounted under `app/public/`. If the file is missing at runtime, the `<img>`
-// fallback degrades to a glyph — no layout shift, no console error thrown by
-// React itself.
+// Renders `/logo.svg` (the canonical SB monogram, dark on white). The asset is
+// mounted under `app/public/`. Maintenance Log 2026-05-26: the `logo-light.svg`
+// cream variant was retired — the user wants the same black-on-white mark in
+// both themes. If the file is missing at runtime, the `<img>` fallback degrades
+// to a glyph — no layout shift, no console error thrown by React itself.
 //
 // When `onClick` is supplied, the logo is wrapped in a <button> so it acts as
 // the "home" affordance (Constitution § Identity — clicking the logo returns
 // the user to the main menu). When omitted, the logo renders as a plain image.
 //
+// Maintenance Log 2026-05-26-pm: the SB monogram is dark-ink-on-transparent,
+// so on the dark-mode `bg-ink-raised` AppBar canvas it became almost
+// invisible. The user wants the logo enlarged AND placed on an intentional
+// white plate so it's legible in both themes (the white panel is part of
+// the brand presentation, not an accident). 32px → 56px image; the wrapper
+// adds 8px of white padding on each side.
+const LOGO_SIZE = 56;
+const LOGO_PLATE_PADDING = 8;
+
 function BrandLogo({ onClick }: { onClick?: () => void }) {
   const [errored, setErrored] = useState(false);
 
   const inner = errored ? (
     <span
       aria-hidden="true"
-      className="font-serif text-gold"
-      style={{ fontSize: "20px", lineHeight: 1 }}
+      className="font-serif"
+      style={{ fontSize: "32px", lineHeight: 1, color: "#1A1A1A" }}
     >
       ❖
     </span>
   ) : (
     <img
-      src="/logo-light.svg"
+      src="/logo.svg"
       alt="שון בלאיש — חזרה לתפריט הראשי"
-      width={32}
-      height={32}
-      style={{ display: "block", height: 32, width: "auto" }}
+      width={LOGO_SIZE}
+      height={LOGO_SIZE}
+      style={{ display: "block", height: LOGO_SIZE, width: LOGO_SIZE }}
       onError={() => setErrored(true)}
     />
   );
 
-  if (!onClick) return inner;
+  // White plate makes the dark-ink monogram readable in both themes.
+  // Inline `backgroundColor` instead of a Tailwind class so it stays
+  // pinned to white regardless of `--color-*` token flips.
+  const plateStyle: CSSProperties = {
+    backgroundColor: "#FFFFFF",
+    padding: LOGO_PLATE_PADDING,
+    borderRadius: 4,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
+
+  if (!onClick) {
+    return <span style={plateStyle}>{inner}</span>;
+  }
 
   return (
     <button
@@ -177,15 +204,14 @@ function BrandLogo({ onClick }: { onClick?: () => void }) {
       data-testid="brand-logo-home"
       aria-label="חזרה לתפריט הראשי"
       className="
-        flex items-center justify-center
-        bg-transparent border-0 cursor-pointer p-1
+        bg-transparent border-0 cursor-pointer p-0
         transition-transform duration-150
         hover:scale-105 active:scale-95
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold focus-visible:ring-offset-2
       "
       style={{ borderRadius: 0 }}
     >
-      {inner}
+      <span style={plateStyle}>{inner}</span>
     </button>
   );
 }

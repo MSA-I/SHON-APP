@@ -76,11 +76,32 @@ export const CATEGORY_SCAN_ORDER: readonly ImageCategory[] = [
   }
 }
 
-/** SOP 01 § Thumbnail Strategy — 256 px on the longest edge. */
-export const THUMBNAIL_MAX_EDGE = 256 as const;
+/**
+ * Thumbnail edge length on the longest side. Maintenance Log 2026-05-26:
+ * bumped 256 → 512 because gallery tiles render at ~312 px CSS-px and the
+ * 256 px source was being upscaled bilinearly by the browser, producing
+ * the blurry tiles the user complained about. 512 px sits comfortably
+ * above the tile size in either window-width range; downscaling looks
+ * sharp.
+ */
+export const THUMBNAIL_MAX_EDGE = 512 as const;
 
-/** SOP 01 § Thumbnail Strategy — WebP encode quality. Brief calls for q=0.8. */
-export const THUMBNAIL_QUALITY = 0.8 as const;
+/**
+ * WebP encode quality. Maintenance Log 2026-05-26: 0.80 → 0.85 — the
+ * doubled pixel count more than absorbs the modest size cost, and the
+ * higher quality keeps fine details (lace, embroidery, plate texture)
+ * legible on the larger thumbnail.
+ */
+export const THUMBNAIL_QUALITY = 0.85 as const;
+
+/**
+ * Generation marker for the cached thumbnail blobs. Bump this whenever
+ * `THUMBNAIL_MAX_EDGE` or `THUMBNAIL_QUALITY` change so existing rows in
+ * the `thumbnails` IndexedDB store get evicted lazily on next read.
+ *   • 1 — initial 256 px @ q=0.8 baseline (any record without `generation`).
+ *   • 2 — 512 px @ q=0.85 (this entry, 2026-05-26).
+ */
+export const THUMBNAIL_GENERATION = 2 as const;
 
 /** Loose-file paths that make up the synthetic `כיסא כלה` category. */
 const LOOSE_BRIDAL_CHAIR_PATHS: readonly string[] = [
@@ -669,7 +690,16 @@ export async function getOrBakeThumbnail(
 
   const key = nfc(image.path);
 
-  // 1. Cache lookup.
+  // 1. Cache lookup. Maintenance Log 2026-05-26 (revised after a freeze
+  //    report from Shon's machine): we deliberately DO NOT evict pre-
+  //    generation-2 thumbnails on read. The first revision of this code
+  //    treated every 256 px row as stale and re-baked it on first access,
+  //    which on the 884-image library produced a giant simultaneous bake
+  //    wave — the worker pool soaked the canvas thread and the app froze.
+  //    The generation marker is still recorded on new bakes (so a future
+  //    background migration job CAN differentiate them), but old rows
+  //    continue to serve until the user explicitly resets caches via
+  //    Settings → "אפס נתונים מקומיים". New images bake fresh at 512 px.
   try {
     const cached = await getThumbnail(key);
     if (cached && cached.sourceModifiedAt >= image.modifiedAt) {
@@ -693,12 +723,105 @@ export async function getOrBakeThumbnail(
       blob,
       generatedAt: Date.now(),
       sourceModifiedAt: image.modifiedAt,
+      generation: THUMBNAIL_GENERATION,
     });
   } catch (cause) {
     console.error('[images] putThumbnail failed for', key, cause);
   }
 
   return blob;
+}
+
+// ===========================================================================
+// ensureThumbnailForSelection
+// ===========================================================================
+
+/**
+ * Make sure the gallery `thumbnails` IDB store has a 256-px blob for the
+ * given `imagePath` so the Summary tab's `<SelectionThumbnail>` can render
+ * the picked image on a cold restart, even when the user opened the event
+ * directly without ever visiting the Gallery this session.
+ *
+ * Maintenance Log 2026-05-26: introduced after Shon reported that
+ * previously-selected images stayed empty in the Summary tab on cold
+ * restart. The cascade in `SelectionThumbnail` previously fell through to
+ * `thumbnails` only as Stage 3, but that store is filled by the
+ * `bakeThumbnailsBatch` call inside `Gallery.tsx`. If the user picked
+ * images, closed the app, and reopened straight to Summary, no thumbnail
+ * was ever baked → blank cards. This helper is fire-and-forget at
+ * pick-time so the cache always exists when the Summary later reads it.
+ *
+ * Idempotent: `getOrBakeThumbnail` reads the cache first and only bakes
+ * when the source mtime is newer than the cached row. Best-effort:
+ * never throws — failures are logged and swallowed so the pick UX is
+ * unaffected.
+ */
+export async function ensureThumbnailForSelection(
+  imagePath: string,
+  category: ImageCategory,
+  fs: FsProvider = tauriFsProvider,
+): Promise<void> {
+  if (typeof imagePath !== 'string' || imagePath.length === 0) return;
+  if (!IMAGE_CATEGORIES.includes(category)) return;
+
+  const relPath = nfc(imagePath);
+  // Reject traversal segments and absolute paths — same defenses as
+  // `selectionPathToSrc` so a stale `ImageSelection.imagePath` from a
+  // long-ago backup can never trigger a stat outside the project root.
+  for (const seg of relPath.split('/')) {
+    if (seg === '..' || seg === '.') return;
+  }
+  if (
+    relPath.startsWith('/') ||
+    relPath.startsWith('\\') ||
+    /^[a-zA-Z]:[\\/]/.test(relPath)
+  ) {
+    return;
+  }
+
+  const ext = getExtension(relPath);
+  // Only bake real image formats. Videos return null from
+  // `getOrBakeThumbnail` so an early-return saves the disk stat.
+  if (!IMAGE_EXTS.has(ext)) return;
+
+  let absPath: string;
+  try {
+    absPath = await toAbsolutePath(relPath);
+  } catch {
+    return;
+  }
+
+  let stat: { size: number; mtimeMs: number };
+  try {
+    stat = await fs.stat(absPath);
+  } catch {
+    // Source file moved / deleted — no point baking. The Summary tab will
+    // surface a placeholder for this selection, which the user can fix
+    // by re-picking from the Gallery.
+    return;
+  }
+
+  const cls = classifyByExtension(relPath);
+  if (!cls || cls.kind !== 'image') return;
+
+  // Synthesize a minimal `ImageMetadata` for `getOrBakeThumbnail`. The
+  // `name` field is not used by the bake pipeline; we still NFC-strip
+  // the extension for cache-key consistency with `scanCategory`.
+  const synthetic: ImageMetadata = {
+    path: relPath,
+    name: nfc(stripExtension(relPath.split('/').pop() ?? '')),
+    category,
+    kind: cls.kind,
+    fileType: cls.fileType,
+    sizeBytes: stat.size,
+    modifiedAt: stat.mtimeMs,
+  };
+
+  try {
+    await getOrBakeThumbnail(synthetic, fs);
+  } catch (cause) {
+    console.error('[images] ensureThumbnailForSelection failed', relPath, cause);
+  }
 }
 
 // ===========================================================================

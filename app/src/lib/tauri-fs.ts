@@ -198,19 +198,82 @@ export async function safeRemoveFile(path: string): Promise<void> {
 }
 
 /**
- * SOP 08 § Atomic Writes: write to `path + '.tmp'` then rename. If rename
- * fails (destination locked because Word has the file open), the `.tmp` file
- * remains and the caller surfaces the error.
+ * SOP 08 § Atomic Writes: write to `path + '.tmp'` then rename.
+ *
+ * Maintenance Log 2026-05-26 (post-export-error): the rename step fails on
+ * Windows whenever the destination DOCX is locked — typically because Word
+ * still has the previous export open. The original code surfaced only the
+ * generic message "atomicWriteFile failed" so the user couldn't see the
+ * cause. We now (1) include the underlying Tauri error string in the
+ * message, (2) clean up the orphaned `.tmp` if the rename step fails, and
+ * (3) on the rename-only failure, fall back to a direct overwrite of the
+ * destination — Tauri's `writeFile` opens the destination for write and
+ * Windows lets that succeed even if the file was previously held open by
+ * Word for read. This keeps the export working when Shon re-exports an
+ * event whose plan.docx is still open in Word from the prior round.
  */
 export async function atomicWriteFile(path: string, data: Uint8Array): Promise<void> {
   await assertInsideRoot(path, 'FS_WRITE_FILE');
   const tmp = `${path}.tmp`;
   await assertInsideRoot(tmp, 'FS_WRITE_FILE');
+
+  // Step 1 — write the .tmp.
   try {
     await tauriWriteFile(toNativePath(tmp), data);
-    await tauriRename(toNativePath(tmp), toNativePath(path));
   } catch (cause) {
-    throw new LibError('atomicWriteFile failed', { code: 'FS_WRITE_FILE', path, cause });
+    throw new LibError(
+      `atomicWriteFile failed (writing tmp): ${stringifyCause(cause)}`,
+      { code: 'FS_WRITE_FILE', path, cause },
+    );
+  }
+
+  // Step 2 — rename .tmp → path.
+  try {
+    await tauriRename(toNativePath(tmp), toNativePath(path));
+    return;
+  } catch (renameCause) {
+    // Step 2b — rename failed (destination locked). Try a direct overwrite
+    // of the destination, then drop the orphan .tmp. If both fail, surface
+    // a typed error with the rename cause so the user sees "the file is
+    // open in Word" instead of a generic message.
+    let directWriteCause: unknown = null;
+    try {
+      await tauriWriteFile(toNativePath(path), data);
+    } catch (cause) {
+      directWriteCause = cause;
+    }
+
+    // Cleanup the orphan .tmp regardless of which path succeeded.
+    try {
+      await tauriRemove(toNativePath(tmp));
+    } catch {
+      /* non-fatal — tmp file lingers; user can delete manually */
+    }
+
+    if (directWriteCause === null) {
+      // Direct write succeeded — the destination was writable but the
+      // rename was not (e.g. Windows ERROR_ACCESS_DENIED on rename when
+      // destination has an open share). Treat as success.
+      return;
+    }
+
+    throw new LibError(
+      `atomicWriteFile failed: ${stringifyCause(renameCause)}` +
+        ` (direct-write fallback also failed: ${stringifyCause(directWriteCause)})`,
+      { code: 'FS_WRITE_FILE', path, cause: renameCause },
+    );
+  }
+}
+
+/** Best-effort string view of an unknown error for inclusion in messages. */
+function stringifyCause(err: unknown): string {
+  if (err == null) return 'unknown';
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
   }
 }
 

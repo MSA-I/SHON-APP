@@ -32,6 +32,7 @@ const SELECTION_BAKE_MAX_WIDTH = 600;
 
 // Module-level cache for the logo PNG bytes (loaded once, reused for every export).
 let logoPngBytesCache: Uint8Array | null = null;
+let gamosLogoBytesCache: Uint8Array | null = null;
 
 import { ChipLabel, SectionHeader } from './EventDetailsTab';
 import { SignaturePad } from '../signature/SignaturePad';
@@ -202,8 +203,15 @@ export function SummaryTab(): ReactNode {
         return;
       }
 
-      // Load logo PNG (cached module-level; on first call, rasterizes the SVG)
-      const logoPng = await loadLogoPng();
+      // Load logos (both cached module-level). The SB monogram is rasterized
+      // from the SVG; the Gamos venue logo is fetched as PNG bytes verbatim.
+      // Both calls are best-effort — if either fails the cover renders the
+      // surviving logo (or no logo at all). Per Behavioral Rule #13 the DOCX
+      // is always light-theme so we never need to choose a dark variant.
+      const [logoPng, gamosLogoPng] = await Promise.all([
+        loadLogoPng(),
+        loadGamosLogoPng(),
+      ]);
 
       const input: DocxBuildInput = {
         client,
@@ -211,10 +219,13 @@ export function SummaryTab(): ReactNode {
         selections: {
           tableDesigns: ev.tableDesignSelections,
           chuppah: ev.chuppah.designSelections,
+          napkins: ev.napkins.designSelections ?? [],
+          upgrades: ev.upgrades.designSelections ?? [],
         },
         signature: ev.signature,
         imageBytes,
         logoPngBytes: logoPng ?? undefined,
+        gamosLogoPngBytes: gamosLogoPng ?? undefined,
       };
 
       const bytes = await buildEventDocx(input);
@@ -682,7 +693,13 @@ function normalizeIsraeliPhone(raw: string): string {
  * Steps:
  *   1. Fetch the SVG via a relative URL (the Vite bundler serves assets/ as /assets/).
  *   2. Parse the SVG string to extract the viewBox dimensions.
- *   3. Create an offscreen canvas with 300x100px target dimensions.
+ *   3. Create an offscreen canvas SCALED TO THE SVG's NATURAL ASPECT
+ *      (Maintenance Log 2026-05-26-pm: previously hardcoded 300×100,
+ *      which baked the square 1254×1254 SB monogram into a 100×100
+ *      block surrounded by 200px of white padding — when the docx cell
+ *      then rendered the PNG at 80×80, only ~27% of the cell was the
+ *      mark itself, the rest was white. Fix: bake the canvas at the
+ *      SVG's actual ratio so the resulting PNG is "all monogram".)
  *   4. Draw the SVG into an Image element and render it onto the canvas.
  *   5. Convert canvas → PNG dataURL → Uint8Array.
  *
@@ -694,8 +711,12 @@ async function loadLogoPng(): Promise<Uint8Array | null> {
   if (logoPngBytesCache !== null) return logoPngBytesCache;
 
   try {
-    // Behavioral Rule #13: DOCX is always light-theme → use logo.svg (dark on white)
-    const svgResp = await fetch('/assets/logo.svg');
+    // Behavioral Rule #13: DOCX is always light-theme → use logo.svg (dark on white).
+    // Maintenance Log 2026-05-26: corrected the URL from `/assets/logo.svg` to
+    // `/logo.svg` — the file is at `app/public/logo.svg`, which Vite serves at
+    // the site root. The previous URL silently 404'd, so every prior export
+    // shipped without the SB monogram.
+    const svgResp = await fetch('/logo.svg');
     if (!svgResp.ok) return null;
     const svgText = await svgResp.text();
 
@@ -711,9 +732,13 @@ async function loadLogoPng(): Promise<Uint8Array | null> {
       }
     }
 
-    // Target dimensions for the PNG
-    const targetW = 300;
-    const targetH = 100;
+    // Bake the canvas at the SVG's natural aspect with a fixed long-edge.
+    // 600px on the long edge gives Word plenty of pixels to render the
+    // monogram crisply at any reasonable embedded size.
+    const longEdge = 600;
+    const aspect = svgW / svgH;
+    const targetW = aspect >= 1 ? longEdge : Math.round(longEdge * aspect);
+    const targetH = aspect >= 1 ? Math.round(longEdge / aspect) : longEdge;
 
     if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
       return null;
@@ -725,29 +750,25 @@ async function loadLogoPng(): Promise<Uint8Array | null> {
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    // White background per Behavioral Rule #13
+    // White background per Behavioral Rule #13.
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, targetW, targetH);
 
-    // Create an Image element to hold the SVG
+    // Create an Image element to hold the SVG.
     const img = new Image();
     const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
     const svgUrl = URL.createObjectURL(svgBlob);
 
-    // Wait for the image to load
+    // Wait for the image to load.
     await new Promise<void>((resolve, reject) => {
       img.onload = () => resolve();
       img.onerror = () => reject(new Error('SVG load failed'));
       img.src = svgUrl;
     });
 
-    // Draw the SVG onto the canvas with aspect-fit
-    const scale = Math.min(targetW / svgW, targetH / svgH);
-    const drawW = svgW * scale;
-    const drawH = svgH * scale;
-    const offsetX = (targetW - drawW) / 2;
-    const offsetY = (targetH - drawH) / 2;
-    ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+    // Draw the SVG to fill the canvas — the canvas already matches the
+    // SVG's aspect, so no padding is needed.
+    ctx.drawImage(img, 0, 0, targetW, targetH);
 
     URL.revokeObjectURL(svgUrl);
 
@@ -764,6 +785,47 @@ async function loadLogoPng(): Promise<Uint8Array | null> {
 
     logoPngBytesCache = arr;
     return arr;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load the Gamos venue logo as a PNG byte buffer for DOCX embedding.
+ *
+ * The asset lives at `app/public/assets/gamos-logo.png` (bundled into the
+ * Tauri build per the 2026-05-26 brand directive — see claude.md). Unlike
+ * `loadLogoPng`, no SVG → canvas rasterisation is needed because the source
+ * is already PNG. We still gate the bytes with a magic-byte check so a
+ * future asset swap can't sneak a non-PNG past `docx@8.5`'s PNG-only part
+ * naming (Maintenance Log 2026-05-25).
+ *
+ * Returns `null` on any failure (asset missing, fetch error, magic-byte
+ * mismatch). The DOCX cover gracefully falls back to single-logo layout.
+ */
+async function loadGamosLogoPng(): Promise<Uint8Array | null> {
+  if (gamosLogoBytesCache !== null) return gamosLogoBytesCache;
+
+  try {
+    const resp = await fetch('/assets/gamos-logo.png');
+    if (!resp.ok) return null;
+    const buffer = await resp.arrayBuffer();
+    if (buffer.byteLength === 0) return null;
+    const bytes = new Uint8Array(buffer);
+    // PNG magic: 89 50 4E 47
+    if (
+      bytes.length < 4 ||
+      bytes[0] !== 0x89 ||
+      bytes[1] !== 0x50 ||
+      bytes[2] !== 0x4e ||
+      bytes[3] !== 0x47
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn('[summary] gamos logo is not a PNG');
+      return null;
+    }
+    gamosLogoBytesCache = bytes;
+    return bytes;
   } catch {
     return null;
   }

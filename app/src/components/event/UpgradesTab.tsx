@@ -67,12 +67,14 @@ export function UpgradesTab(): ReactNode {
     const next: ImageSelection[] = selections.map((s) =>
       s.imagePath === path ? { ...s, notes } : s,
     );
-    patchUpgrades({ designSelections: next });
+    ctx.setUpgradesSelections(next);
   }
 
   function removeSelection(path: string) {
-    const next = selections.filter((s) => s.imagePath !== path);
-    patchUpgrades({ designSelections: next });
+    ctx.dispatch({
+      type: 'remove-upgrades-selection',
+      imagePath: path,
+    });
   }
 
   return (
@@ -236,7 +238,7 @@ export function UpgradesTab(): ReactNode {
           mode="upgrades"
           selections={selections}
           onClose={(nextSelections) => {
-            patchUpgrades({ designSelections: nextSelections });
+            ctx.setUpgradesSelections(nextSelections);
             setGalleryOpen(false);
           }}
         />

@@ -22,6 +22,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -102,6 +103,34 @@ export function SignaturePad({
   const reduce = useReducedMotion();
 
   const todayStamp = useMemo(() => formatHebrewLongDate(Date.now()), []);
+
+  // Theme-aware pen color for the live-drawing canvas. Maintenance Log
+  // 2026-05-26: previously hardcoded `penColor="#F5F0E8"` (cream). In light
+  // mode the canvas frame fill (`--color-ink`) flips to `#FFF8F5`, so the
+  // cream ink rendered as cream-on-cream — invisible. Read the resolved
+  // computed value of `--color-cream` from the document root after every
+  // theme flip; the read-only `<SignatureView>` already uses `currentColor`,
+  // but `react-signature-canvas` reads `penColor` once per session.
+  const [penColor, setPenColor] = useState<string>('#211A16');
+  useLayoutEffect(() => {
+    const updatePenColor = () => {
+      if (typeof window === 'undefined') return;
+      const resolved = getComputedStyle(document.documentElement)
+        .getPropertyValue('--color-cream')
+        .trim();
+      if (resolved) setPenColor(resolved);
+    };
+    updatePenColor();
+    // Re-read on theme change. The shell flips `data-theme` on
+    // <html>; observe attribute mutations so a stale pen color is fixed
+    // mid-session if the user toggles after entering the pad.
+    const observer = new MutationObserver(updatePenColor);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (editing) setHasStroke(false);
@@ -223,7 +252,7 @@ export function SignaturePad({
             ref={(instance) => {
               padRef.current = instance;
             }}
-            penColor="#F5F0E8" /* --color-cream — visible while drawing */
+            penColor={penColor} /* theme-aware: --color-cream resolved at render */
             backgroundColor="rgba(0,0,0,0)"
             canvasProps={
               {
@@ -404,7 +433,16 @@ function SignatureView({ signature }: { signature: Signature | null }) {
     );
   }
   // kind === 'vector' — re-render strokes in SVG, inheriting color from the
-  // theme via `currentColor`.
+  // theme via `currentColor`. Maintenance Log 2026-05-26: previously the
+  // wrapper hard-coded `style={{ color: 'var(--color-cream, …) }}` on the
+  // <svg>, which short-circuited the cascade — Tailwind's `.text-cream`
+  // utility (which already resolves to the theme-aware `--color-cream` var)
+  // was being overridden by the same var written as an inline style with a
+  // literal cream fallback. The user reported the signature was invisible in
+  // light mode; root cause: the inline `style` won the cascade and froze the
+  // ink near-cream. Fix: drop the inline color, let `.text-cream` drive the
+  // var alone, and bump stroke to 2.2px so the dark ink reads cleanly on the
+  // cream canvas.
   const pathD = strokesToSvgPath(signature.strokes);
   return (
     <svg
@@ -414,19 +452,14 @@ function SignatureView({ signature }: { signature: Signature | null }) {
       viewBox={`0 0 ${signature.width} ${signature.height}`}
       width={CANVAS_WIDTH}
       height={CANVAS_HEIGHT}
-      style={{
-        display: 'block',
-        // `text-cream` resolves to a CSS variable that the light-theme
-        // override flips to dark ink. Either way, `currentColor` follows.
-        color: 'var(--color-cream, #F5F0E8)',
-      }}
+      style={{ display: 'block' }}
       className="text-cream"
     >
       <path
         d={pathD}
         fill="none"
         stroke="currentColor"
-        strokeWidth={2}
+        strokeWidth={2.2}
         strokeLinecap="round"
         strokeLinejoin="round"
       />

@@ -21,7 +21,6 @@ import { Plus, X } from 'lucide-react';
 import { useEvent } from '../../contexts/EventContext';
 import {
   FOLD_TYPES,
-  type Event,
   type FoldType,
   type ImageSelection,
   type Napkins,
@@ -78,21 +77,13 @@ export function NapkinsTab(): ReactNode {
     const next: ImageSelection[] = selections.map((s) =>
       s.imagePath === path ? { ...s, notes } : s,
     );
-    ctx.dispatch({
-      type: 'patch-event',
-      patch: {
-        napkins: { ...ev!.napkins, designSelections: next },
-      } as Partial<Event>,
-    });
+    ctx.setNapkinsSelections(next);
   }
 
   function removeAt(path: string) {
-    const next = selections.filter((s) => s.imagePath !== path);
     ctx.dispatch({
-      type: 'patch-event',
-      patch: {
-        napkins: { ...ev!.napkins, designSelections: next },
-      } as Partial<Event>,
+      type: 'remove-napkins-selection',
+      imagePath: path,
     });
   }
 
@@ -283,12 +274,7 @@ export function NapkinsTab(): ReactNode {
           mode="napkins"
           selections={selections}
           onClose={(nextSelections) => {
-            ctx.dispatch({
-              type: 'patch-event',
-              patch: {
-                napkins: { ...ev.napkins, designSelections: nextSelections },
-              } as Partial<Event>,
-            });
+            ctx.setNapkinsSelections(nextSelections);
             setGalleryOpen(false);
           }}
         />

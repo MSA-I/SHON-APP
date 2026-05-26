@@ -38,6 +38,7 @@ import {
   PageOrientation,
   Paragraph,
   PageBreak,
+  Table,
   TextRun,
   convertInchesToTwip,
 } from 'docx';
@@ -122,25 +123,38 @@ export async function buildEventDocx(
       }
     }
 
+    // Gamos venue logo — same gating as the SB monogram. Only used on the
+    // cover; the body header band keeps the SB-only treatment.
+    let validatedGamos: Uint8Array | null = null;
+    if (input.gamosLogoPngBytes && input.gamosLogoPngBytes.byteLength > 0) {
+      try {
+        assertPngOrJpegMagic(input.gamosLogoPngBytes, { what: 'gamos logo PNG' });
+        validatedGamos = input.gamosLogoPngBytes;
+      } catch {
+        validatedGamos = null;
+      }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
-    // Section 1: Cover page
+    // Section 1: Cover page — Maintenance Log 2026-05-26: now also carries
+    // the event-details block (sectionHeader + fieldTable + optional notes)
+    // so the cover hero and the first content block share a single page.
+    // The body section starts at "Table designs" — that's where the running
+    // header (mini SB + brand hairline) naturally first appears (page 2+).
     // ─────────────────────────────────────────────────────────────────────
-    const coverChildren: Paragraph[] = coverHero({
+    const coverChildren: (Paragraph | Table)[] = coverHero({
       logoPngBytes: validatedLogo,
+      gamosLogoPngBytes: validatedGamos,
       coupleNames: input.client.coupleNames,
       dateDisplay: formatIsoDate(input.event.date),
       dayOfWeek: input.event.dayOfWeek,
       startTime: input.event.startTime,
     });
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Section 2: Body pages (header + footer + content sections)
-    // ─────────────────────────────────────────────────────────────────────
-    const bodyChildren: Paragraph[] = [];
-
-    // 1. Event details
-    bodyChildren.push(...sectionHeader('פרטי אירוע', 'פרטי האירוע'));
-    bodyChildren.push(
+    // Event details — moved into the cover section so cover + first details
+    // share page 1 (per user directive 2026-05-26).
+    coverChildren.push(...sectionHeader('פרטי אירוע', 'פרטי האירוע'));
+    coverChildren.push(
       ...fieldTable([
         { label: 'תאריך', value: formatIsoDate(input.event.date) },
         { label: 'יום', value: input.event.dayOfWeek },
@@ -151,10 +165,10 @@ export async function buildEventDocx(
       ]),
     );
     if (input.event.notes && input.event.notes.trim().length > 0) {
-      bodyChildren.push(
+      coverChildren.push(
         new Paragraph({
           bidirectional: true,
-          alignment: AlignmentType.RIGHT,
+          alignment: AlignmentType.CENTER,
           spacing: { before: 100, after: 80 },
           children: [
             new TextRun({
@@ -175,10 +189,16 @@ export async function buildEventDocx(
         }),
       );
     }
-    bodyChildren.push(ornamentDivider());
-    bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 2. Table designs
+    // ─────────────────────────────────────────────────────────────────────
+    // Section 2: Body pages (header + footer + content sections)
+    // Starts at "Table designs"; the cover→body section break replaces the
+    // old explicit PageBreak that used to live after the event-details
+    // ornament.
+    // ─────────────────────────────────────────────────────────────────────
+    const bodyChildren: Paragraph[] = [];
+
+    // 1. Table designs
     if (input.selections.tableDesigns.length > 0) {
       bodyChildren.push(...sectionHeader('עיצוב', 'עיצובי שולחן'));
       const cappedDesigns = input.selections.tableDesigns.slice(
@@ -212,7 +232,7 @@ export async function buildEventDocx(
       bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
     }
 
-    // 3. Napkins (color removed 2026-05-24 — derived from designSelections)
+    // 2. Napkins (color removed 2026-05-24 — derived from designSelections)
     bodyChildren.push(...sectionHeader('מפיות', 'מפות ומפיות'));
     bodyChildren.push(
       ...fieldTable([
@@ -221,9 +241,9 @@ export async function buildEventDocx(
         { label: 'קבלת פנים ריזורט', value: input.event.reception.atResort ? 'כן' : 'לא' },
       ]),
     );
-    if (input.event.napkins.designSelections && input.event.napkins.designSelections.length > 0) {
+    if (input.selections.napkins.length > 0) {
       const napkinsGrid = await Promise.all(
-        input.event.napkins.designSelections.map(async (sel) => {
+        input.selections.napkins.map(async (sel) => {
           const bytes = input.imageBytes.get(sel.imagePath);
           if (!bytes || bytes.byteLength === 0) {
             throw new LibError(
@@ -249,7 +269,7 @@ export async function buildEventDocx(
     bodyChildren.push(ornamentDivider());
     bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 4. Chuppah
+    // 3. Chuppah
     bodyChildren.push(...sectionHeader('חופה', 'חופה'));
     if (!CHUPPAH_TYPE_LITERALS.has(input.event.chuppah.type)) {
       throw new LibError(
@@ -296,13 +316,13 @@ export async function buildEventDocx(
     bodyChildren.push(ornamentDivider());
     bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 5. Upgrades
+    // 4. Upgrades
     bodyChildren.push(...sectionHeader('שדרוגים', 'שדרוגים'));
     if (input.event.upgrades.description && input.event.upgrades.description.trim().length > 0) {
       bodyChildren.push(
         new Paragraph({
           bidirectional: true,
-          alignment: AlignmentType.RIGHT,
+          alignment: AlignmentType.CENTER,
           spacing: { after: 160 },
           children: [
             new TextRun({
@@ -322,7 +342,7 @@ export async function buildEventDocx(
         bodyChildren.push(
           new Paragraph({
             bidirectional: true,
-            alignment: AlignmentType.RIGHT,
+            alignment: AlignmentType.CENTER,
             spacing: { after: 80 },
             indent: { start: 360 },
             children: [
@@ -344,9 +364,9 @@ export async function buildEventDocx(
           }),
         );
       });
-    if (input.event.upgrades.designSelections && input.event.upgrades.designSelections.length > 0) {
+    if (input.selections.upgrades.length > 0) {
       const upgradesGrid = await Promise.all(
-        input.event.upgrades.designSelections.map(async (sel) => {
+        input.selections.upgrades.map(async (sel) => {
           const bytes = input.imageBytes.get(sel.imagePath);
           if (!bytes || bytes.byteLength === 0) {
             throw new LibError(
@@ -372,7 +392,7 @@ export async function buildEventDocx(
     bodyChildren.push(ornamentDivider());
     bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 6. Signature
+    // 5. Signature
     bodyChildren.push(...sectionHeader('חתימה', 'חתימה דיגיטלית'));
     if (input.signature) {
       const sigBytes = await materializeSignaturePng(input.signature);
@@ -383,7 +403,7 @@ export async function buildEventDocx(
     bodyChildren.push(ornamentDivider());
     bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // 7. Legal terms
+    // 6. Legal terms
     bodyChildren.push(...sectionHeader('תנאים', 'תנאים משפטיים'));
     bodyChildren.push(
       new Paragraph({
@@ -413,7 +433,7 @@ export async function buildEventDocx(
         default: {
           document: {
             run: { font: DOCX_TOKENS.fonts.serif, rightToLeft: true },
-            paragraph: { alignment: AlignmentType.RIGHT },
+            paragraph: { alignment: AlignmentType.CENTER },
           },
         },
       },
@@ -492,7 +512,13 @@ function assertInput(input: DocxBuildInput): void {
       code: 'DOCX_BUILD',
     });
   }
-  if (!input.selections || !Array.isArray(input.selections.tableDesigns) || !Array.isArray(input.selections.chuppah)) {
+  if (
+    !input.selections ||
+    !Array.isArray(input.selections.tableDesigns) ||
+    !Array.isArray(input.selections.chuppah) ||
+    !Array.isArray(input.selections.napkins) ||
+    !Array.isArray(input.selections.upgrades)
+  ) {
     throw new LibError('DocxBuildInput.selections malformed', {
       code: 'DOCX_BUILD',
     });

@@ -51,28 +51,22 @@ export function SelectionThumbnail({
     }
   }, [imagePath]);
 
-  // Stage 1 — async FS URL (primes the project-root cache).
-  // Stage 2 — `selectedImageBytes` IDB cache (600px PNG baked at last export).
-  // Stage 3 — `thumbnails` IDB cache (256px scan blob).
-  // If all three miss, `src` stays null and we render the ❖ placeholder.
+  // Maintenance Log 2026-05-26: stage order flipped to IDB-first.
+  //   Stage 1 — `selectedImageBytes` IDB cache (600px PNG baked at last export)
+  //   Stage 2 — `thumbnails` IDB cache (256px gallery-scan blob; pre-baked at
+  //             pick-time via `ensureThumbnailForSelection` so this stage is a
+  //             reliable hit on cold restart).
+  //   Stage 3 — async FS URL via the Tauri asset protocol (last-resort
+  //             fallback for the rare case where both IDB stores were
+  //             cleared but the file is still on disk).
+  // The new order makes Summary thumbnails appear synchronously on first
+  // render in the common case — no flicker through the placeholder.
   useEffect(() => {
     if (src) return;
     let cancelled = false;
 
     async function resolve() {
-      // Stage 1: FS URL via the asset protocol.
-      try {
-        const asyncSrc = await selectionPathToSrcAsync(imagePath);
-        if (cancelled) return;
-        if (asyncSrc) {
-          setSrc(asyncSrc);
-          return;
-        }
-      } catch {
-        // fall through
-      }
-
-      // Stage 2: previously-baked PNG bytes.
+      // Stage 1: previously-baked PNG bytes (from a prior export).
       try {
         const cached = await getSelectedImageBytes(imagePath);
         if (cancelled) return;
@@ -90,7 +84,8 @@ export function SelectionThumbnail({
         // fall through
       }
 
-      // Stage 3: gallery-scan thumbnail (256px JPEG blob).
+      // Stage 2: gallery-scan thumbnail (256px WebP blob). Pre-baked at
+      // pick-time so this is the workhorse of cold-restart rendering.
       try {
         const thumb = await getThumbnail(imagePath);
         if (cancelled) return;
@@ -101,6 +96,18 @@ export function SelectionThumbnail({
           }
           ownedObjectUrlRef.current = url;
           setSrc(url);
+          return;
+        }
+      } catch {
+        // fall through
+      }
+
+      // Stage 3: FS URL via the asset protocol (last-resort fallback).
+      try {
+        const asyncSrc = await selectionPathToSrcAsync(imagePath);
+        if (cancelled) return;
+        if (asyncSrc) {
+          setSrc(asyncSrc);
           return;
         }
       } catch {

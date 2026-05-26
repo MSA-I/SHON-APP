@@ -123,8 +123,16 @@ const COLOR_PALETTE: readonly string[] = [
   'חום',
 ];
 
-/** Confidence threshold — top bucket must own at least this share of pixels. */
-const COLOR_CONFIDENCE = 0.4;
+/**
+ * Confidence threshold for the pixel heuristic. Maintenance Log 2026-05-26:
+ * raised from 0.40 to 0.50 — at 0.40 a "mostly green table runner with pink
+ * flowers" image would emit BOTH ירוק and ורוד, even though neither colour
+ * is the photograph's primary subject. With weighted scoring (filename=1.0,
+ * visual-range=0.9, pixel=variable) and a per-label cutoff of 0.9, a 0.50
+ * dominance threshold is the bar at which a single colour is unambiguously
+ * the picture's surface.
+ */
+const COLOR_CONFIDENCE = 0.5;
 
 /** Sample grid edge — 64×64 = 4096 pixels per image. */
 const SAMPLE_EDGE = 64;
@@ -324,6 +332,98 @@ export async function deriveColorFromThumbnail(
   return topBucket;
 }
 
+/**
+ * Maintenance Log 2026-05-26: companion to `deriveColorFromThumbnail` that
+ * returns the dominant bucket together with its share `(0..1)`. The caller
+ * uses the share as a confidence multiplier in the weighted scorer (a 0.85
+ * dominance scores higher than a 0.55 dominance, so it can outrank competing
+ * heuristics on tight calls). Returns `null` if no bucket clears the
+ * `COLOR_CONFIDENCE` floor — same gate as the legacy function.
+ */
+export type DominantColorSignal = {
+  label: string;
+  share: number;
+};
+
+export async function deriveDominantColorWithShare(
+  blob: Blob,
+): Promise<DominantColorSignal | null> {
+  if (!blob || typeof (blob as Blob).size !== 'number') return null;
+  if (typeof createImageBitmap !== 'function') return null;
+
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch {
+    return null;
+  }
+
+  let canvas: SampleCanvas;
+  try {
+    canvas = makeSampleCanvas();
+  } catch {
+    bitmap.close?.();
+    return null;
+  }
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bitmap.close?.();
+    return null;
+  }
+
+  try {
+    ctx.drawImage(
+      bitmap as unknown as CanvasImageSource,
+      0,
+      0,
+      SAMPLE_EDGE,
+      SAMPLE_EDGE,
+    );
+  } catch {
+    bitmap.close?.();
+    return null;
+  }
+  bitmap.close?.();
+
+  let imageData: ImageData;
+  try {
+    imageData = ctx.getImageData(0, 0, SAMPLE_EDGE, SAMPLE_EDGE);
+  } catch {
+    return null;
+  }
+
+  const histogram = new Map<string, number>();
+  let counted = 0;
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    const a = data[i + 3] ?? 255;
+    if (a < 200) continue;
+    const bucket = bucketForPixel(rgbToHsl({ r, g, b }));
+    if (bucket === null) continue;
+    histogram.set(bucket, (histogram.get(bucket) ?? 0) + 1);
+    counted += 1;
+  }
+  if (counted === 0) return null;
+
+  let topBucket: string | null = null;
+  let topShare = 0;
+  for (const [bucket, count] of histogram) {
+    const share = count / counted;
+    if (share > topShare) {
+      topShare = share;
+      topBucket = bucket;
+    }
+  }
+
+  if (topBucket === null || topShare < COLOR_CONFIDENCE) return null;
+  if (!COLOR_PALETTE.includes(topBucket)) return null;
+  return { label: topBucket, share: topShare };
+}
+
 // ===========================================================================
 // C. Visual range heuristic (curator-inspected, 2026-05-24)
 // ===========================================================================
@@ -435,6 +535,45 @@ export type AutoTagOptions = {
 const CHUNK_SIZE = 8;
 
 /**
+ * Weighted-scoring constants for the auto-tag pipeline. Maintenance Log
+ * 2026-05-26: replaces the previous "union all heuristic outputs" model that
+ * produced false-positive labels (a flower image inside `מפות מפיות` getting
+ * a "מפיה" label because the napkin was also visible in the frame).
+ *
+ * Each heuristic that emits a label contributes a numeric score; labels are
+ * kept iff the cumulative score reaches `LABEL_CONFIDENCE_FLOOR`. A filename
+ * match alone clears the bar; a pixel-only signal needs to be *very*
+ * dominant (≥ 0.85 share) to outrank an absent filename match.
+ *
+ *   FILENAME_WEIGHT    1.00 — Shon's curators name files explicitly
+ *                              (e.g. `מפית-וורד-עתיק-12.JPG`).
+ *   VISUAL_RANGE_WEIGHT 0.90 — curator-inspected ranges are explicit too.
+ *   PIXEL_WEIGHT_MIN   0.50 — the bare minimum at COLOR_CONFIDENCE share.
+ *   PIXEL_WEIGHT_MAX   1.00 — when a single colour owns ≥ 0.85 of pixels.
+ *   LABEL_CONFIDENCE_FLOOR 0.90 — keep label only if score ≥ this.
+ */
+const FILENAME_WEIGHT = 1.0;
+const VISUAL_RANGE_WEIGHT = 0.9;
+const PIXEL_WEIGHT_MIN = 0.5;
+const PIXEL_WEIGHT_MAX = 1.0;
+const LABEL_CONFIDENCE_FLOOR = 0.9;
+
+/**
+ * Map a pixel-bucket dominance share to a heuristic weight. Linearly
+ * interpolates between `PIXEL_WEIGHT_MIN` (at COLOR_CONFIDENCE share) and
+ * `PIXEL_WEIGHT_MAX` (at 0.85 share or above). Sub-COLOR_CONFIDENCE shares
+ * never reach this function — they're filtered upstream.
+ */
+function pixelWeightForShare(share: number): number {
+  const lo = COLOR_CONFIDENCE;
+  const hi = 0.85;
+  if (share >= hi) return PIXEL_WEIGHT_MAX;
+  if (share <= lo) return PIXEL_WEIGHT_MIN;
+  const t = (share - lo) / (hi - lo);
+  return PIXEL_WEIGHT_MIN + t * (PIXEL_WEIGHT_MAX - PIXEL_WEIGHT_MIN);
+}
+
+/**
  * Walk the full ImageMetadata array and write an ImageTag for every image we
  * can confidently classify. Yields between chunks so the progress UI stays
  * responsive on a 884-image cold run.
@@ -461,10 +600,26 @@ export async function autoTagLibrary(
         if (signal?.aborted) return;
 
         try {
-          const rawLabels = new Set<string>([
-            ...deriveLabelsFromName(image),
-            ...deriveLabelsFromVisualRange(image),
-          ]);
+          // Maintenance Log 2026-05-26: weighted scoring replaces the old
+          // "union of all heuristic outputs". Each candidate label collects
+          // scores from every heuristic that emitted it; only labels whose
+          // summed score clears `LABEL_CONFIDENCE_FLOOR` (0.9) survive.
+          // Filename alone (1.0) qualifies; visual-range alone (0.9) is on
+          // the edge but qualifies; pixel alone needs > 0.85 dominance to
+          // outrank an absent filename match. The result: incidental
+          // objects in the frame stop emitting labels by themselves.
+          const scores = new Map<string, number>();
+          const bumpScore = (label: string, weight: number): void => {
+            const normalized = normalizeFabric(label);
+            scores.set(normalized, (scores.get(normalized) ?? 0) + weight);
+          };
+
+          for (const label of deriveLabelsFromName(image)) {
+            bumpScore(label, FILENAME_WEIGHT);
+          }
+          for (const label of deriveLabelsFromVisualRange(image)) {
+            bumpScore(label, VISUAL_RANGE_WEIGHT);
+          }
 
           // Pixel heuristic only for actual images (videos return null from
           // getOrBakeThumbnail). Skip when nameOnly=true (Gallery fast-pass).
@@ -476,18 +631,23 @@ export async function autoTagLibrary(
               blob = null;
             }
             if (blob) {
-              const color = await deriveColorFromThumbnail(blob);
-              if (color) rawLabels.add(color);
+              const dominant = await deriveDominantColorWithShare(blob);
+              if (dominant) {
+                bumpScore(dominant.label, pixelWeightForShare(dominant.share));
+              }
             }
           }
 
-          // Filter through category schema — only keep labels that are allowed
-          // for this image's category. Normalize fabric alias before checking.
+          // Apply the confidence floor + category-schema filter together.
+          // Labels that don't appear in `allowedLabelsFor(image.category)`
+          // are dropped regardless of score (a "מפיה" label has no place
+          // under `כיסא כלה`, even if every heuristic agreed).
           const allowed = allowedLabelsFor(image.category);
           const labels = new Set<string>();
-          for (const raw of rawLabels) {
-            const normalized = normalizeFabric(raw);
-            if (allowed.has(normalized)) labels.add(normalized);
+          for (const [label, score] of scores) {
+            if (score < LABEL_CONFIDENCE_FLOOR) continue;
+            if (!allowed.has(label)) continue;
+            labels.add(label);
           }
 
           if (labels.size === 0) {

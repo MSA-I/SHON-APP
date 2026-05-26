@@ -16,9 +16,16 @@ import {
   BorderStyle,
   Footer,
   Header,
+  HeightRule,
   ImageRun,
   Paragraph,
+  Table,
+  TableCell,
+  TableRow,
   TextRun,
+  VerticalAlign,
+  WidthType,
+  convertInchesToTwip,
 } from 'docx';
 
 // ---------------------------------------------------------------------------
@@ -54,8 +61,26 @@ const SIZE = {
 } as const;
 
 // Image dimensions in points (1pt ≈ 1/72in)
+//
+// Maintenance Log 2026-05-26: split `logo` into per-brand entries because the
+// SB and Gamos source PNGs have different aspect ratios (SB ≈ square crown
+// medallion 1:1, Gamos venue mark 1.6:1). Forcing both into the old 3:1 logo
+// (150×50) squashed the Gamos artwork until its embedded "GAMOS · אירועים"
+// wordmark was illegible.
+//
+// Maintenance Log 2026-05-26-pm: bumped the cover dimensions because the
+// previous values made the SB cell read as a small medallion in a sea of
+// white. SB is now 110×110 (square, 1254×1254 source), Gamos is 150×93
+// (1.6:1, sized to match the SB long-edge so the two cells visually
+// balance side-by-side). `logoMini` (page header) stays 50×17 — that
+// rectangle inside the body header is intentional, the SB mini-version
+// sits beside the brand-tagline run.
 const IMG_DIM = {
-  logo: { width: 150, height: 50 },
+  /** SB monogram — square crown medallion (1254×1254 source). */
+  logoSb: { width: 110, height: 110 },
+  /** Gamos venue mark — natural 1.6:1 (2116×1317). */
+  logoGamos: { width: 150, height: 93 },
+  /** Page-header mini variant of the SB monogram. Unchanged. */
   logoMini: { width: 50, height: 17 },
   designSelection: { width: 300, height: 200 },
   signature: { width: 200, height: 60 },
@@ -67,16 +92,23 @@ const IMG_DIM = {
 
 /**
  * Build a Header for body pages.
- * Layout: [logo mini left-aligned]  "שון בלאיש · הפקות" [right-aligned]
- * Gold hairline below the band.
+ * Layout: centered [logo mini] "שון בלאיש · הפקות"
+ *                            "גאמוס · אירועים"   (stacked below, muted)
+ *         gold hairline.
+ *
+ * Maintenance Log 2026-05-26-pm: added the second line per user
+ * directive — every body page now carries both brand wordmarks in the
+ * running header. The mini logo stays SB-only (Gamos artwork too noisy
+ * at 50×17). `bidiVisual: true` preserves Hebrew shaping; only the
+ * paragraph block centres on the page.
  */
 export function headerBand(logoPngBytes: Uint8Array | null): Header {
   const rows: Paragraph[] = [];
 
-  // Logo + brand line (single RTL paragraph with both inline)
-  const children: (TextRun | ImageRun)[] = [];
+  // Line 1: logo mini + "שון בלאיש · הפקות"
+  const lineOne: (TextRun | ImageRun)[] = [];
   if (logoPngBytes && logoPngBytes.byteLength > 0) {
-    children.push(
+    lineOne.push(
       new ImageRun({
         data: logoPngBytes,
         transformation: {
@@ -85,7 +117,7 @@ export function headerBand(logoPngBytes: Uint8Array | null): Header {
         },
       }),
     );
-    children.push(
+    lineOne.push(
       new TextRun({
         text: '  ',
         rightToLeft: true,
@@ -94,7 +126,7 @@ export function headerBand(logoPngBytes: Uint8Array | null): Header {
       }),
     );
   }
-  children.push(
+  lineOne.push(
     new TextRun({
       text: 'שון בלאיש · הפקות',
       rightToLeft: true,
@@ -106,9 +138,27 @@ export function headerBand(logoPngBytes: Uint8Array | null): Header {
   rows.push(
     new Paragraph({
       bidirectional: true,
-      alignment: AlignmentType.RIGHT,
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 20 },
+      children: lineOne,
+    }),
+  );
+
+  // Line 2: "גאמוס · אירועים" (no logo; sits directly under line 1).
+  rows.push(
+    new Paragraph({
+      bidirectional: true,
+      alignment: AlignmentType.CENTER,
       spacing: { after: 60 },
-      children,
+      children: [
+        new TextRun({
+          text: 'גאמוס · אירועים',
+          rightToLeft: true,
+          font: DOCX_TOKENS.fonts.serif,
+          size: SIZE.tiny,
+          color: DOCX_TOKENS.goldMuted,
+        }),
+      ],
     }),
   );
 
@@ -116,7 +166,7 @@ export function headerBand(logoPngBytes: Uint8Array | null): Header {
   rows.push(
     new Paragraph({
       bidirectional: true,
-      alignment: AlignmentType.RIGHT,
+      alignment: AlignmentType.CENTER,
       border: {
         bottom: {
           color: DOCX_TOKENS.goldHairline,
@@ -158,86 +208,59 @@ export function footerStrip(): Footer {
 
 /**
  * Build the cover hero page (page 1).
- * Layout:
- *   [LOGO centered 300x100]
- *   "שון בלאיש" (Frank Ruhl 24pt gold)
- *   "הפקות" (Heebo 11pt tracked)
+ *
+ * Maintenance Log 2026-05-26 — dual-wordmark refactor:
+ *   When both SB and Gamos logos are provided, the cover renders a 2-cell
+ *   no-border `Table` with each logo + its own wordmark stacked vertically:
+ *
+ *     ┌────────────────┬────────────────┐
+ *     │   [GAMOS PNG]  │   [SB PNG]     │   (visual L → R; under bidiVisual
+ *     │                │                │    the DOM order is SB cell first
+ *     │     גאמוס      │   שון בלאיש    │    so it reads R-to-L: SB right,
+ *     │    אירועים     │     הפקות      │    Gamos left.)
+ *     └────────────────┴────────────────┘
+ *
+ *   When only SB is provided, the table degrades to a single full-width cell
+ *   with the SB logo + שון בלאיש / הפקות wordmark — preserving the legacy
+ *   single-logo cover.
+ *
+ * Then the rest of the cover continues as Paragraphs:
  *   ━━━━━ (gold hairline)
- *   [שמות בני הזוג — Frank Ruhl 36pt cream] (אבל DOCX כהה על בהיר per Rule #13)
- *   14.06.2026 · יום ראשון (Frank Ruhl 14pt)
+ *   [שמות בני הזוג — Frank Ruhl 36pt ink, per Rule #13]
+ *   14.06.2026 · יום ראשון (Frank Ruhl 11pt)
  *   20:00 (Frank Ruhl 12pt)
  *   ❖ (gold ornament)
- *   --- page break ---
+ *
+ * Cover spacing is also tightened (logo before:120, ornament after:80) so
+ * the section can host the event-details block on the same page.
  */
 export function coverHero(opts: {
   logoPngBytes: Uint8Array | null;
+  /** Optional Gamos venue logo. Drives the dual-wordmark layout. */
+  gamosLogoPngBytes?: Uint8Array | null;
   coupleNames: string;
   dateDisplay: string;
   dayOfWeek: string;
   startTime: string;
-}): Paragraph[] {
-  const paras: Paragraph[] = [];
+}): (Paragraph | Table)[] {
+  const out: (Paragraph | Table)[] = [];
 
-  // Logo centered
-  if (opts.logoPngBytes && opts.logoPngBytes.byteLength > 0) {
-    paras.push(
-      new Paragraph({
-        bidirectional: true,
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 240, after: 120 },
-        children: [
-          new ImageRun({
-            data: opts.logoPngBytes,
-            transformation: {
-              width: IMG_DIM.logo.width,
-              height: IMG_DIM.logo.height,
-            },
-          }),
-        ],
+  const hasSb = !!(opts.logoPngBytes && opts.logoPngBytes.byteLength > 0);
+  const hasGamos = !!(
+    opts.gamosLogoPngBytes && opts.gamosLogoPngBytes.byteLength > 0
+  );
+
+  if (hasSb || hasGamos) {
+    out.push(
+      buildLogoBrandTable({
+        sbBytes: hasSb ? opts.logoPngBytes! : null,
+        gamosBytes: hasGamos ? opts.gamosLogoPngBytes! : null,
       }),
     );
   }
 
-  // "שון בלאיש"
-  paras.push(
-    new Paragraph({
-      bidirectional: true,
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 40 },
-      children: [
-        new TextRun({
-          text: 'שון בלאיש',
-          rightToLeft: true,
-          font: DOCX_TOKENS.fonts.serif,
-          size: SIZE.label,
-          color: DOCX_TOKENS.gold,
-          bold: true,
-        }),
-      ],
-    }),
-  );
-
-  // "הפקות" (uppercase tracked)
-  paras.push(
-    new Paragraph({
-      bidirectional: true,
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 60 },
-      children: [
-        new TextRun({
-          text: 'הפקות',
-          rightToLeft: true,
-          font: DOCX_TOKENS.fonts.sans,
-          size: SIZE.small,
-          color: DOCX_TOKENS.goldMuted,
-          allCaps: true,
-        }),
-      ],
-    }),
-  );
-
-  // Gold hairline
-  paras.push(
+  // Gold hairline under the brand cluster.
+  out.push(
     new Paragraph({
       bidirectional: true,
       alignment: AlignmentType.CENTER,
@@ -249,12 +272,12 @@ export function coverHero(opts: {
           size: 6,
         },
       },
-      spacing: { after: 120 },
+      spacing: { before: 80, after: 120 },
     }),
   );
 
-  // Couple names (headline — Behavioral Rule #13: dark ink on white, NOT cream)
-  paras.push(
+  // Couple names (headline — Behavioral Rule #13: dark ink on white).
+  out.push(
     new Paragraph({
       bidirectional: true,
       alignment: AlignmentType.CENTER,
@@ -273,7 +296,7 @@ export function coverHero(opts: {
   );
 
   // Date + day of week
-  paras.push(
+  out.push(
     new Paragraph({
       bidirectional: true,
       alignment: AlignmentType.CENTER,
@@ -291,7 +314,7 @@ export function coverHero(opts: {
   );
 
   // Time
-  paras.push(
+  out.push(
     new Paragraph({
       bidirectional: true,
       alignment: AlignmentType.CENTER,
@@ -308,12 +331,13 @@ export function coverHero(opts: {
     }),
   );
 
-  // ❖ ornament
-  paras.push(
+  // ❖ ornament — tightened bottom spacing to leave room for the
+  // event-details block that now lives in the same section (Phase X).
+  out.push(
     new Paragraph({
       bidirectional: true,
       alignment: AlignmentType.CENTER,
-      spacing: { before: 100, after: 200 },
+      spacing: { before: 60, after: 80 },
       children: [
         new TextRun({
           text: '❖',
@@ -325,8 +349,142 @@ export function coverHero(opts: {
     }),
   );
 
-  // No PageBreak here — Section boundaries handle page transitions
-  return paras;
+  return out;
+}
+
+/**
+ * Compose the SB + Gamos brand block as a 2-cell no-border table.
+ * Each cell carries the logo image + its own wordmark stack (brand line +
+ * tagline). When only `sbBytes` is present, returns a single-cell variant.
+ *
+ * Cell order in the DOM is [SB, Gamos]; under `bidiVisual: true` this maps
+ * visually to "SB right, Gamos left" — Hebrew reading order.
+ */
+function buildLogoBrandTable(opts: {
+  sbBytes: Uint8Array | null;
+  gamosBytes: Uint8Array | null;
+}): Table {
+  const cellPlans: Array<{
+    logoBytes: Uint8Array;
+    logoWidth: number;
+    logoHeight: number;
+    brand: string;
+    tagline: string;
+  }> = [];
+
+  if (opts.sbBytes) {
+    cellPlans.push({
+      logoBytes: opts.sbBytes,
+      logoWidth: IMG_DIM.logoSb.width,
+      logoHeight: IMG_DIM.logoSb.height,
+      brand: 'שון בלאיש',
+      tagline: 'הפקות',
+    });
+  }
+  if (opts.gamosBytes) {
+    cellPlans.push({
+      logoBytes: opts.gamosBytes,
+      logoWidth: IMG_DIM.logoGamos.width,
+      logoHeight: IMG_DIM.logoGamos.height,
+      brand: 'גאמוס',
+      tagline: 'אירועים',
+    });
+  }
+
+  // 50/50 if both, otherwise full-width.
+  const cellWidthPct = cellPlans.length === 2 ? 50 : 100;
+  const cells = cellPlans.map((plan) =>
+    buildBrandCell({ ...plan, widthPct: cellWidthPct }),
+  );
+
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      insideHorizontal: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      insideVertical: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    },
+    rows: [
+      new TableRow({
+        height: { value: convertInchesToTwip(1.4), rule: HeightRule.AUTO },
+        // `cantSplit` keeps the brand block on one page if the row would
+        // otherwise straddle a page break.
+        cantSplit: true,
+        children: cells,
+      }),
+    ],
+  });
+}
+
+/**
+ * Build one brand cell: logo image (centered) + brand line + tagline.
+ */
+function buildBrandCell(opts: {
+  logoBytes: Uint8Array;
+  logoWidth: number;
+  logoHeight: number;
+  brand: string;
+  tagline: string;
+  widthPct: number;
+}): TableCell {
+  return new TableCell({
+    verticalAlign: VerticalAlign.CENTER,
+    width: { size: opts.widthPct, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    },
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 120, after: 60 },
+        children: [
+          new ImageRun({
+            data: opts.logoBytes,
+            transformation: {
+              width: opts.logoWidth,
+              height: opts.logoHeight,
+            },
+          }),
+        ],
+      }),
+      new Paragraph({
+        bidirectional: true,
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 40 },
+        children: [
+          new TextRun({
+            text: opts.brand,
+            rightToLeft: true,
+            font: DOCX_TOKENS.fonts.serif,
+            size: SIZE.label,
+            color: DOCX_TOKENS.gold,
+            bold: true,
+          }),
+        ],
+      }),
+      new Paragraph({
+        bidirectional: true,
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 60 },
+        children: [
+          new TextRun({
+            text: opts.tagline,
+            rightToLeft: true,
+            font: DOCX_TOKENS.fonts.sans,
+            size: SIZE.small,
+            color: DOCX_TOKENS.goldMuted,
+            allCaps: true,
+          }),
+        ],
+      }),
+    ],
+  });
 }
 
 /**
@@ -337,11 +495,14 @@ export function coverHero(opts: {
  *   ━━━━━ (gold hairline)
  */
 export function sectionHeader(eyebrow: string, title: string): Paragraph[] {
+  // Maintenance Log 2026-05-26: flipped to CENTER per the editorial-magazine
+  // target. `bidirectional: true` preserves Hebrew shaping; only the
+  // paragraph block centres on the page.
   return [
     // Eyebrow
     new Paragraph({
       bidirectional: true,
-      alignment: AlignmentType.RIGHT,
+      alignment: AlignmentType.CENTER,
       spacing: { before: 120, after: 40 },
       children: [
         new TextRun({
@@ -357,7 +518,7 @@ export function sectionHeader(eyebrow: string, title: string): Paragraph[] {
     // Title
     new Paragraph({
       bidirectional: true,
-      alignment: AlignmentType.RIGHT,
+      alignment: AlignmentType.CENTER,
       spacing: { after: 60 },
       children: [
         new TextRun({
@@ -373,7 +534,7 @@ export function sectionHeader(eyebrow: string, title: string): Paragraph[] {
     // Gold hairline
     new Paragraph({
       bidirectional: true,
-      alignment: AlignmentType.RIGHT,
+      alignment: AlignmentType.CENTER,
       border: {
         bottom: {
           color: DOCX_TOKENS.goldHairline,
@@ -395,11 +556,15 @@ export function sectionHeader(eyebrow: string, title: string): Paragraph[] {
 export function fieldTable(
   rows: { label: string; value: string }[],
 ): Paragraph[] {
+  // Maintenance Log 2026-05-26: flipped to CENTER per the editorial-magazine
+  // target. Each row stays as a label + value paragraph (not an actual
+  // table); the centred paragraph block lays the pairs out under the
+  // section header in a single column.
   return rows.map(
     (r) =>
       new Paragraph({
         bidirectional: true,
-        alignment: AlignmentType.RIGHT,
+        alignment: AlignmentType.CENTER,
         spacing: { after: 80 },
         children: [
           new TextRun({
@@ -432,11 +597,11 @@ export function imageGrid2x(
   const paras: Paragraph[] = [];
 
   for (const item of items) {
-    // Image paragraph
+    // Image paragraph — centred to match the editorial-magazine target.
     paras.push(
       new Paragraph({
         bidirectional: true,
-        alignment: AlignmentType.RIGHT,
+        alignment: AlignmentType.CENTER,
         spacing: { before: 120, after: 60 },
         children: [
           new ImageRun({
@@ -455,7 +620,7 @@ export function imageGrid2x(
       paras.push(
         new Paragraph({
           bidirectional: true,
-          alignment: AlignmentType.RIGHT,
+          alignment: AlignmentType.CENTER,
           spacing: { before: 40, after: 120 },
           children: [
             new TextRun({
@@ -484,11 +649,13 @@ export function signatureBlock(opts: {
 }): Paragraph[] {
   const paras: Paragraph[] = [];
 
+  // Maintenance Log 2026-05-26: every paragraph in the signature block is
+  // centred to match the editorial-magazine target.
   if (opts.signaturePngBytes && opts.signaturePngBytes.byteLength > 0) {
     paras.push(
       new Paragraph({
         bidirectional: true,
-        alignment: AlignmentType.RIGHT,
+        alignment: AlignmentType.CENTER,
         spacing: { before: 120, after: 60 },
         children: [
           new ImageRun({
@@ -507,7 +674,7 @@ export function signatureBlock(opts: {
   paras.push(
     new Paragraph({
       bidirectional: true,
-      alignment: AlignmentType.RIGHT,
+      alignment: AlignmentType.CENTER,
       spacing: { before: 60, after: 120 },
       border: {
         top: {
@@ -533,7 +700,7 @@ export function signatureBlock(opts: {
   paras.push(
     new Paragraph({
       bidirectional: true,
-      alignment: AlignmentType.RIGHT,
+      alignment: AlignmentType.CENTER,
       spacing: { before: 60, after: 80 },
       children: [
         new TextRun({

@@ -21,11 +21,10 @@ import {
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useToast } from '../../contexts/ToastContext';
-import { listImageTags } from '../../lib/db';
+import { listImageTags, deleteImageTag } from '../../lib/db';
 import { getOrBakeThumbnail, scanAll } from '../../lib/images';
 import { autoTagLibrary } from '../../lib/auto-tag';
 import { CATEGORY_SCHEMA, allowedLabelsFor } from '../../lib/category-schema';
-import { findDuplicates } from '../../lib/dedup';
 import {
   IMAGE_CATEGORIES,
   type ImageCategory,
@@ -179,10 +178,11 @@ export function Gallery({
     () => new Map(),
   );
 
-  // Dedup state (populated in the background after scan completes).
-  const [hiddenDuplicates, setHiddenDuplicates] = useState<Set<string>>(
-    () => new Set(),
-  );
+  // Maintenance Log 2026-05-26: runtime dedup retired. The 4 actual
+  // duplicate files in the library were moved to `.trash/<ts>/` in the
+  // 2026-05-26 maintenance pass; future-suffix variants (Windows
+  // copy-paste) are caught by the offline `.tmp/find-duplicates.py`
+  // script, not by the React shell.
 
   // Filters
   const [activeCategory, setActiveCategory] = useState<ImageCategory>(
@@ -203,15 +203,14 @@ export function Gallery({
   // Library scan — runs once on mount.
   // After the scan, if there are no imageTags in IDB yet (user pressed
   // "דלג זמנית" during the tagging pass), we run a fast name-only auto-tag
-  // pass so the sub-category strip is populated.
+  // pass so the sub-category strip is populated. Maintenance Log 2026-05-24
+  // added a schema-conformance resync (idempotent re-tag for any image
+  // whose existing tags carry no schema-conformant labels).
   //
-  // Maintenance Log 2026-05-24: added schema resync + background dedup.
-  //   1. Schema resync (auto) — images whose existing tags contain NO
-  //      schema-conformant labels are re-auto-tagged so dimension chips
-  //      actually have counts. Idempotent; tags already conformant skip.
-  //   2. Dedup (background) — after scan completes, findDuplicates runs in
-  //      the background (non-blocking). Duplicates are filtered from the
-  //      visible grid via hiddenDuplicates Set. No manual gate — always on.
+  // Maintenance Log 2026-05-26: the previous background dHash dedup pass
+  // was retired. The 4 actual duplicate files in the library were moved
+  // to `.trash/<ts>/` in the same maintenance pass; the offline
+  // `.tmp/find-duplicates.py` script handles future re-runs.
   // -----------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
@@ -237,9 +236,28 @@ export function Gallery({
 
         const allImages = Array.from(scanResult.byCategory.values()).flat();
 
+        // Maintenance Log 2026-05-26: prune orphan `imageTags` rows whose
+        // `imagePath` is no longer present in the live scan. Without this,
+        // sub-category chip counts inflate after the user (or a maintenance
+        // pass) deletes/moves source files — e.g. after the 2026-05-26
+        // duplicate purge that moved 130+ files to .trash/. Tag rows are
+        // small and the prune is cheap; we run it before the auto-tag
+        // pass so the resync below sees a clean baseline.
+        let tags = existingTags;
+        if (existingTags.length > 0) {
+          const livePaths = new Set(allImages.map((img) => img.path));
+          const orphans = existingTags.filter((t) => !livePaths.has(t.imagePath));
+          if (orphans.length > 0) {
+            await Promise.allSettled(
+              orphans.map((t) => deleteImageTag(t.imagePath)),
+            );
+            tags = existingTags.filter((t) => livePaths.has(t.imagePath));
+          }
+        }
+        if (cancelled) return;
+
         // Fast auto-tag pass (name+visual-range only, no pixel decode) when
         // the store is empty — fills the sub-category strip without blocking.
-        let tags = existingTags;
         if (tags.length === 0 && allImages.length > 0) {
           try {
             await autoTagLibrary(allImages, { nameOnly: true });
@@ -278,7 +296,12 @@ export function Gallery({
         }
         if (needsResync.length > 0) {
           try {
-            await autoTagLibrary(needsResync, { nameOnly: false });
+            // Maintenance Log 2026-05-26 (post-freeze fix): resync runs
+            // with `nameOnly: true` so it never blocks on a thumbnail
+            // bake wave. Pixel-colour labels for un-tagged images are
+            // best-effort and can be backfilled later by a Settings
+            // re-tag; avoiding the sync bake during boot is the priority.
+            await autoTagLibrary(needsResync, { nameOnly: true });
           } catch (err) {
             console.error('[gallery] schema-resync failed', err);
           }
@@ -298,33 +321,6 @@ export function Gallery({
         setTagsByPath(map);
         setByCategory(new Map(scanResult.byCategory));
         setScanComplete(true);
-
-        // Background dedup — runs after scan completes. Non-blocking.
-        // Populates hiddenDuplicates Set so the grid filters out duplicate
-        // images automatically. Failures are non-fatal (logged only).
-        if (!cancelled && allImages.length > 0) {
-          void (async () => {
-            try {
-              const clusters = await findDuplicates(
-                allImages,
-                (img) => getOrBakeThumbnail(img),
-                {
-                  signal: undefined, // no user-facing abort; runs to completion
-                  onProgress: undefined,
-                },
-              );
-              if (cancelled) return;
-              const hidden = new Set<string>();
-              for (const cluster of clusters) {
-                // Hide all but the canonical (first) image in each cluster.
-                for (const dup of cluster.duplicates) hidden.add(dup.path);
-              }
-              setHiddenDuplicates(hidden);
-            } catch (err) {
-              console.error('[gallery] background dedup failed', err);
-            }
-          })();
-        }
       } catch (err) {
         console.error('[gallery] scanAll failed', err);
         if (!cancelled) setScanComplete(true);
@@ -392,7 +388,6 @@ export function Gallery({
 
   // -----------------------------------------------------------------------
   // Visible images = active category × active kind × search query × sub-cat
-  // × dedup (Maintenance Log 2026-05-24: hide duplicates from the grid).
   // -----------------------------------------------------------------------
   const visibleImages = useMemo<ImageMetadata[]>(() => {
     const list = byCategory.get(activeCategory) ?? [];
@@ -404,8 +399,6 @@ export function Gallery({
         if (!tag) return false;
         if (!tag.customLabels.includes(activeSubCategory)) return false;
       }
-      // Hide duplicates (non-canonical images) from the grid.
-      if (hiddenDuplicates.has(img.path)) return false;
       return true;
     });
   }, [
@@ -415,7 +408,6 @@ export function Gallery({
     query,
     activeSubCategory,
     tagsByPath,
-    hiddenDuplicates,
   ]);
 
   // -----------------------------------------------------------------------

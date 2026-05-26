@@ -29,6 +29,7 @@ import {
 import type { Client, Event, ImageSelection, Signature } from '../types';
 import * as db from '../lib/db';
 import * as backup from '../lib/backup';
+import { ensureThumbnailForSelection } from '../lib/images';
 
 // ===========================================================================
 // State + actions
@@ -51,6 +52,18 @@ export type EventAction =
   | { type: 'remove-table-selection'; imagePath: string }
   | { type: 'add-chuppah-selection'; selection: ImageSelection }
   | { type: 'remove-chuppah-selection'; imagePath: string }
+  // Maintenance Log 2026-05-26: napkins/upgrades selections used to flow
+  // through raw `patch-event`, bypassing the INV-02 sign-edit guard and the
+  // `selectedAt` stamp. These four actions complete the symmetry across all
+  // four image-bearing tabs (table designs, chuppah, napkins, upgrades).
+  | { type: 'add-napkins-selection'; selection: ImageSelection }
+  | { type: 'remove-napkins-selection'; imagePath: string }
+  | { type: 'add-upgrades-selection'; selection: ImageSelection }
+  | { type: 'remove-upgrades-selection'; imagePath: string }
+  /** Replace the entire napkins selection list (used by the Gallery picker). */
+  | { type: 'set-napkins-selections'; selections: ImageSelection[] }
+  /** Replace the entire upgrades selection list (used by the Gallery picker). */
+  | { type: 'set-upgrades-selections'; selections: ImageSelection[] }
   | { type: 'sign'; signature: Signature }
   | { type: 'set-loading'; loading: boolean }
   | { type: 'set-error'; error: string | null }
@@ -74,6 +87,14 @@ export type EventContextValue = EventState & {
   /** INV-01: enforces max 5 selections. */
   toggleTableSelection: (selection: ImageSelection) => void;
   toggleChuppahSelection: (selection: ImageSelection) => void;
+  /** Toggle a napkins design selection (stamps `selectedAt` on add). */
+  toggleNapkinsSelection: (selection: ImageSelection) => void;
+  /** Toggle an upgrades design selection (stamps `selectedAt` on add). */
+  toggleUpgradesSelection: (selection: ImageSelection) => void;
+  /** Replace the napkins selection list wholesale (Gallery picker close). */
+  setNapkinsSelections: (selections: ImageSelection[]) => void;
+  /** Replace the upgrades selection list wholesale (Gallery picker close). */
+  setUpgradesSelections: (selections: ImageSelection[]) => void;
 };
 
 // ===========================================================================
@@ -295,6 +316,116 @@ export function eventReducer(state: EventState, action: EventAction): EventState
         chuppah: {
           ...state.currentEvent.chuppah,
           designSelections: filtered,
+        },
+      });
+      return {
+        ...state,
+        currentEvent: { ...merged, updatedAt: Date.now() },
+        unsavedChanges: true,
+        error: null,
+      };
+    }
+
+    case 'add-napkins-selection': {
+      if (!state.currentEvent) return { ...state, error: ERR_NO_CURRENT_EVENT };
+      const list = state.currentEvent.napkins.designSelections ?? [];
+      if (list.some((s) => s.imagePath === action.selection.imagePath)) {
+        return state; // no-op duplicate
+      }
+      const merged = applyEditAfterSign(state.currentEvent, {
+        napkins: {
+          ...state.currentEvent.napkins,
+          designSelections: [...list, action.selection],
+        },
+      });
+      return {
+        ...state,
+        currentEvent: { ...merged, updatedAt: Date.now() },
+        unsavedChanges: true,
+        error: null,
+      };
+    }
+
+    case 'remove-napkins-selection': {
+      if (!state.currentEvent) return { ...state, error: ERR_NO_CURRENT_EVENT };
+      const list = state.currentEvent.napkins.designSelections ?? [];
+      const filtered = list.filter((s) => s.imagePath !== action.imagePath);
+      if (filtered.length === list.length) return state; // no-op
+      const merged = applyEditAfterSign(state.currentEvent, {
+        napkins: {
+          ...state.currentEvent.napkins,
+          designSelections: filtered,
+        },
+      });
+      return {
+        ...state,
+        currentEvent: { ...merged, updatedAt: Date.now() },
+        unsavedChanges: true,
+        error: null,
+      };
+    }
+
+    case 'set-napkins-selections': {
+      if (!state.currentEvent) return { ...state, error: ERR_NO_CURRENT_EVENT };
+      const merged = applyEditAfterSign(state.currentEvent, {
+        napkins: {
+          ...state.currentEvent.napkins,
+          designSelections: action.selections,
+        },
+      });
+      return {
+        ...state,
+        currentEvent: { ...merged, updatedAt: Date.now() },
+        unsavedChanges: true,
+        error: null,
+      };
+    }
+
+    case 'add-upgrades-selection': {
+      if (!state.currentEvent) return { ...state, error: ERR_NO_CURRENT_EVENT };
+      const list = state.currentEvent.upgrades.designSelections ?? [];
+      if (list.some((s) => s.imagePath === action.selection.imagePath)) {
+        return state; // no-op duplicate
+      }
+      const merged = applyEditAfterSign(state.currentEvent, {
+        upgrades: {
+          ...state.currentEvent.upgrades,
+          designSelections: [...list, action.selection],
+        },
+      });
+      return {
+        ...state,
+        currentEvent: { ...merged, updatedAt: Date.now() },
+        unsavedChanges: true,
+        error: null,
+      };
+    }
+
+    case 'remove-upgrades-selection': {
+      if (!state.currentEvent) return { ...state, error: ERR_NO_CURRENT_EVENT };
+      const list = state.currentEvent.upgrades.designSelections ?? [];
+      const filtered = list.filter((s) => s.imagePath !== action.imagePath);
+      if (filtered.length === list.length) return state; // no-op
+      const merged = applyEditAfterSign(state.currentEvent, {
+        upgrades: {
+          ...state.currentEvent.upgrades,
+          designSelections: filtered,
+        },
+      });
+      return {
+        ...state,
+        currentEvent: { ...merged, updatedAt: Date.now() },
+        unsavedChanges: true,
+        error: null,
+      };
+    }
+
+    case 'set-upgrades-selections': {
+      if (!state.currentEvent) return { ...state, error: ERR_NO_CURRENT_EVENT };
+      const merged = applyEditAfterSign(state.currentEvent, {
+        upgrades: {
+          ...state.currentEvent.upgrades,
+          designSelections: action.selections,
         },
       });
       return {
@@ -531,6 +662,11 @@ export function EventProvider({ children }: EventProviderProps) {
             : Date.now(),
       };
       dispatch({ type: 'add-table-selection', selection: stamped });
+      // Maintenance Log 2026-05-26: pre-bake the gallery thumbnail so the
+      // Summary tab's <SelectionThumbnail> always finds a 256-px blob in
+      // the `thumbnails` IDB store on cold restart, regardless of whether
+      // the user ever opened the gallery this session.
+      void ensureThumbnailForSelection(stamped.imagePath, stamped.category);
     },
     [state.currentEvent],
   );
@@ -560,6 +696,115 @@ export function EventProvider({ children }: EventProviderProps) {
             : Date.now(),
       };
       dispatch({ type: 'add-chuppah-selection', selection: stamped });
+      void ensureThumbnailForSelection(stamped.imagePath, stamped.category);
+    },
+    [state.currentEvent],
+  );
+
+  const toggleNapkinsSelection = useCallback(
+    (selection: ImageSelection): void => {
+      const ev = state.currentEvent;
+      if (!ev) {
+        dispatch({ type: 'set-error', error: ERR_NO_CURRENT_EVENT });
+        return;
+      }
+      const list = ev.napkins.designSelections ?? [];
+      const present = list.some((s) => s.imagePath === selection.imagePath);
+      if (present) {
+        dispatch({
+          type: 'remove-napkins-selection',
+          imagePath: selection.imagePath,
+        });
+        return;
+      }
+      const stamped: ImageSelection = {
+        ...selection,
+        selectedAt:
+          typeof selection.selectedAt === 'number' &&
+          selection.selectedAt > 0
+            ? selection.selectedAt
+            : Date.now(),
+      };
+      dispatch({ type: 'add-napkins-selection', selection: stamped });
+      void ensureThumbnailForSelection(stamped.imagePath, stamped.category);
+    },
+    [state.currentEvent],
+  );
+
+  const toggleUpgradesSelection = useCallback(
+    (selection: ImageSelection): void => {
+      const ev = state.currentEvent;
+      if (!ev) {
+        dispatch({ type: 'set-error', error: ERR_NO_CURRENT_EVENT });
+        return;
+      }
+      const list = ev.upgrades.designSelections ?? [];
+      const present = list.some((s) => s.imagePath === selection.imagePath);
+      if (present) {
+        dispatch({
+          type: 'remove-upgrades-selection',
+          imagePath: selection.imagePath,
+        });
+        return;
+      }
+      const stamped: ImageSelection = {
+        ...selection,
+        selectedAt:
+          typeof selection.selectedAt === 'number' &&
+          selection.selectedAt > 0
+            ? selection.selectedAt
+            : Date.now(),
+      };
+      dispatch({ type: 'add-upgrades-selection', selection: stamped });
+      void ensureThumbnailForSelection(stamped.imagePath, stamped.category);
+    },
+    [state.currentEvent],
+  );
+
+  const setNapkinsSelections = useCallback(
+    (selections: ImageSelection[]): void => {
+      const ev = state.currentEvent;
+      if (!ev) {
+        dispatch({ type: 'set-error', error: ERR_NO_CURRENT_EVENT });
+        return;
+      }
+      // Stamp `selectedAt` on any new entry that lacks it (Gallery picker
+      // returns the post-toggle list; entries that came from the gallery
+      // already carry stamps but defensive code-stamps the rest).
+      const stamped = selections.map((s): ImageSelection => ({
+        ...s,
+        selectedAt:
+          typeof s.selectedAt === 'number' && s.selectedAt > 0
+            ? s.selectedAt
+            : Date.now(),
+      }));
+      dispatch({ type: 'set-napkins-selections', selections: stamped });
+      // Pre-bake gallery thumbnails for every selection (idempotent).
+      for (const s of stamped) {
+        void ensureThumbnailForSelection(s.imagePath, s.category);
+      }
+    },
+    [state.currentEvent],
+  );
+
+  const setUpgradesSelections = useCallback(
+    (selections: ImageSelection[]): void => {
+      const ev = state.currentEvent;
+      if (!ev) {
+        dispatch({ type: 'set-error', error: ERR_NO_CURRENT_EVENT });
+        return;
+      }
+      const stamped = selections.map((s): ImageSelection => ({
+        ...s,
+        selectedAt:
+          typeof s.selectedAt === 'number' && s.selectedAt > 0
+            ? s.selectedAt
+            : Date.now(),
+      }));
+      dispatch({ type: 'set-upgrades-selections', selections: stamped });
+      for (const s of stamped) {
+        void ensureThumbnailForSelection(s.imagePath, s.category);
+      }
     },
     [state.currentEvent],
   );
@@ -573,6 +818,10 @@ export function EventProvider({ children }: EventProviderProps) {
       signEvent,
       toggleTableSelection,
       toggleChuppahSelection,
+      toggleNapkinsSelection,
+      toggleUpgradesSelection,
+      setNapkinsSelections,
+      setUpgradesSelections,
     }),
     [
       state,
@@ -581,6 +830,10 @@ export function EventProvider({ children }: EventProviderProps) {
       signEvent,
       toggleTableSelection,
       toggleChuppahSelection,
+      toggleNapkinsSelection,
+      toggleUpgradesSelection,
+      setNapkinsSelections,
+      setUpgradesSelections,
     ],
   );
 

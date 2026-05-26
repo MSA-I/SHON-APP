@@ -90,6 +90,14 @@ export type ThumbnailRecord = {
   generatedAt: number;
   /** mtime of the source image at thumb-time */
   sourceModifiedAt: number;
+  /**
+   * Generation marker — bumped every time the encoder parameters change so
+   * stale rows (smaller resolution, lower quality, different format) are
+   * lazily re-baked on next read. Maintenance Log 2026-05-26: introduced
+   * with the 256→512 px / q=0.8→0.85 upgrade. Records that lack this field
+   * are treated as generation 1 and evicted on first read.
+   */
+  generation?: number;
 };
 
 /**
@@ -1000,6 +1008,7 @@ export async function putThumbnail(rec: ThumbnailRecord): Promise<void> {
     generatedAt: typeof rec.generatedAt === 'number' ? rec.generatedAt : nowMs(),
     sourceModifiedAt:
       typeof rec.sourceModifiedAt === 'number' ? rec.sourceModifiedAt : 0,
+    generation: typeof rec.generation === 'number' ? rec.generation : 1,
   };
   const db = await openDb();
   try {

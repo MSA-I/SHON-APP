@@ -371,12 +371,24 @@ export type DocxBuildInput = {
   selections: {
     tableDesigns: ImageSelection[];
     chuppah: ImageSelection[];
+    /** Napkin design picks. Maintenance Log 2026-05-26: was implicit via
+     *  `event.napkins.designSelections`; now the caller passes it explicitly so
+     *  the same Map<imagePath,bytes> can warm a single cache key per export. */
+    napkins: ImageSelection[];
+    /** Upgrade design picks. Same rationale as `napkins`. */
+    upgrades: ImageSelection[];
   };
   signature: Signature | null;
   /** Bytes for embedded images, keyed by `ImageSelection.imagePath` */
   imageBytes: Map<string, Uint8Array>;
-  /** Contents of assets/logo.svg (rasterized PNG bytes preferred for embedding) */
+  /** SB monogram (rasterized from `public/logo.svg`). Embedded on the cover
+   *  and in the body header band. */
   logoPngBytes?: Uint8Array;
+  /** Gamos venue logo (rasterized from `public/assets/gamos-logo.png`). When
+   *  present, the cover renders SB + Gamos side-by-side per the
+   *  2026-05-26 brand directive; otherwise the cover falls back to the
+   *  single SB monogram. Body header keeps the SB-only treatment. */
+  gamosLogoPngBytes?: Uint8Array;
 };
 
 // =============================================================================

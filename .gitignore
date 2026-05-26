@@ -20,6 +20,15 @@
 *.MP4
 *.MOV
 
+# …but DO track the bundled app assets (logos shipped with the build).
+!app/public/assets/*.png
+!app/public/assets/*.PNG
+!app/public/*.svg
+!app/src-tauri/icons/*.png
+!app/src-tauri/icons/*.PNG
+!app/src-tauri/icons/*.icns
+!app/src-tauri/icons/*.ico
+
 # Local DB / scratch / backups
 ruvector.db
 .swarm/

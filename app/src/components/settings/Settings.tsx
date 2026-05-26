@@ -21,7 +21,7 @@
 // retired in favor of the single app-wide <ToastProvider> mounted in App.tsx.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, Download, Files, Moon, RefreshCw, Sun, TriangleAlert, Upload } from 'lucide-react';
+import { Check, Copy, Download, Moon, RefreshCw, Sun, TriangleAlert, Upload } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 import { useTheme } from '../../contexts/ThemeContext';
@@ -31,7 +31,6 @@ import * as db from '../../lib/db';
 import { getBackupsDir } from '../../lib/paths';
 import { Stagger } from '../../lib/motion/Stagger';
 import { useEntrance } from '../../lib/motion/useEntrance';
-import { DuplicatesReport } from './DuplicatesReport';
 import { tauriFsExtras } from '../../lib/tauri-fs';
 
 // =============================================================================
@@ -49,7 +48,6 @@ export function Settings() {
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
-  const [isDuplicatesOpen, setIsDuplicatesOpen] = useState(false);
   const [isRetagModalOpen, setIsRetagModalOpen] = useState(false);
   const [isRetagging, setIsRetagging] = useState(false);
 
@@ -332,14 +330,6 @@ export function Settings() {
               />
 
               <PrimaryButton
-                onClick={() => setIsDuplicatesOpen(true)}
-                icon={<Files size={16} strokeWidth={1.5} />}
-                testId="settings-find-duplicates"
-              >
-                מצא תמונות כפולות
-              </PrimaryButton>
-
-              <PrimaryButton
                 onClick={handleRetagClick}
                 disabled={isRetagging}
                 icon={<RefreshCw size={16} strokeWidth={1.5} />}
@@ -438,10 +428,6 @@ export function Settings() {
         </Section>
         </Stagger>
       </div>
-
-      {isDuplicatesOpen && (
-        <DuplicatesReport onClose={() => setIsDuplicatesOpen(false)} />
-      )}
 
       {isRetagModalOpen && (
         <RetagConfirmModal
